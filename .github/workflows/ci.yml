@@ -1,0 +1,44 @@
+name: CI
+
+# microservice-offboarding is self-contained code-wise, but its provider tests verify the sibling
+# repos' committed pacts (the purge command the participants read, the outcome security reads),
+# so the checkouts use the workspace layout. Consumer repos are checkout-only (their pacts/), no
+# build. The reactor CI (in the aggregator repo) still validates everything together.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: microservice-offboarding
+      - uses: actions/checkout@v4
+        with:
+          repository: jrobertgardzinski/microservice-memes
+          path: microservice-memes
+      - uses: actions/checkout@v4
+        with:
+          repository: jrobertgardzinski/microservice-comments
+          path: microservice-comments
+      - uses: actions/checkout@v4
+        with:
+          repository: jrobertgardzinski/microservice-user-collections
+          path: microservice-user-collections
+      - uses: actions/checkout@v4
+        with:
+          repository: jrobertgardzinski/microservice-security
+          path: microservice-security
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Build and test (including pact provider verification)
+        run: mvn -B --no-transfer-progress -f microservice-offboarding/pom.xml clean verify

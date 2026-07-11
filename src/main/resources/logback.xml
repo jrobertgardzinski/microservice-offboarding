@@ -1,0 +1,14 @@
+<configuration>
+    <!-- the correlation id (restored from the Kafka header by the consumer loop) rides every line
+         as [cid=...], matching the [cid=%X{cid}] the other services print, so Loki can grep one
+         request across the whole stack -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [cid=%X{cid:-}] [trace=%X{trace_id:-}] %logger{24} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>
