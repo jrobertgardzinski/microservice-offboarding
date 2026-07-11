@@ -46,6 +46,22 @@ a replayed deletion fact finds its saga by the fact's `id` even after completion
 confirmation is a no-op; the STARTED→COMPLETED update is a once-latch, so completion is announced
 by exactly one delivery.
 
+## Always-on by choice, scale-to-zero-ready by design
+
+This is a long-running consumer, and that is deliberate. "Listening" costs next to nothing —
+`poll()` blocks idle (~0% CPU, ~80 MB JVM) and Kafka holds the group's offsets, so downtime
+delays deletions rather than losing them. The service already meets every prerequisite for
+event-driven autoscaling (KEDA 0↔N on consumer-group lag): stateless process (saga state in
+Postgres), idempotent handling (cold starts and redeliveries are safe), offsets at the broker.
+
+It is not scaled to zero anyway, for three reasons: (1) on this stack's deployment target
+(Compose → VPS) an idle JVM saves nothing, while an autoscaler adds a failure mode to a
+GDPR-critical path; (2) the timeout sweeper must fire precisely when NO events arrive — no
+events means no lag, so a lag-based scaler would never wake the one job that compensates
+overdue sagas (you'd need a second cron trigger, or `minReplicas: 1`, which defeats the point);
+(3) one saga type does not earn a cluster. The calculus flips when purges get heavy (scale
+1→N on lag) or on per-second-billed infrastructure.
+
 ## Contracts (Pact, file mode — workspace ADR 0003)
 
 As a **consumer** this service pins (committed in `pacts/`): security's deletion fact (id, email,
