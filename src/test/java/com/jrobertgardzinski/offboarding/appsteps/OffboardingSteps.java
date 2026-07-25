@@ -93,6 +93,7 @@ public class OffboardingSteps {
                         + "\"email\":\"" + email + "\",\"version\":1}"));
     }
 
+    @Given("security announced that {word} requested deletion choosing memes={word} and comments={word}")
     @When("security announces that {word} requested deletion choosing memes={word} and comments={word}")
     public void deletionRequestedWithPolicy(String email, String memesRule, String commentsRule) {
         announced.addAll(router.handle(FACTS_TOPIC,
@@ -256,6 +257,21 @@ public class OffboardingSteps {
         JsonNode policy = onlyOn(EventsRouter.COMMANDS_TOPIC).path("policy");
         assertEquals(memesRule, policy.path("memes").asText());
         assertEquals(commentsRule, policy.path("comments").asText());
+    }
+
+    @Then("every purge command carries the choices memes={word} and comments={word}")
+    public void everyPurgeCommandCarriesPolicy(String memesRule, String commentsRule) {
+        // the retry must repeat the ORIGINAL command — the choices stored with the saga, not the
+        // participants' defaults; every command on the wire carries them identically
+        List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC);
+        assertFalse(commands.isEmpty(), "no purge command went out to carry the choices");
+        for (JsonNode command : commands) {
+            JsonNode policy = command.path("policy");
+            assertEquals(memesRule, policy.path("memes").asText(),
+                    "the choices must survive into: " + command);
+            assertEquals(commentsRule, policy.path("comments").asText(),
+                    "the choices must survive into: " + command);
+        }
     }
 
     @Then("the portal announces the content of {word} purged")

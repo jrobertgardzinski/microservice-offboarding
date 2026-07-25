@@ -29,7 +29,8 @@ import java.util.UUID;
  * security's orchestrator used to emit, so the participants never noticed the changing of the
  * guard — and the single outcome security waits for: {@code PORTAL_CONTENT_PURGED} or
  * {@code PORTAL_PURGE_FAILED}. The leaver's policy choices ride the command verbatim — their
- * vocabulary belongs to the content services, this one only ferries.
+ * vocabulary belongs to the content services, this one only ferries — and are stored with the
+ * saga so the sweeper's re-command repeats them instead of a bare default.
  *
  * <p>Records that cannot possibly be routed — no parsable id on a fact, a present-but-unparseable
  * sagaId on a confirmation, no email anywhere — are poison pills: logged and dropped, exactly
@@ -115,12 +116,12 @@ public class EventsRouter {
         for (SagaStore.Retry retry : swept.retries()) {
             LOG.info("purge unconfirmed in time for {}; re-commanding (saga {})",
                     masked(retry.email()), retry.sagaId());
-            // the retry carries no policy: the original fact is not persisted, so a re-commanded
-            // purge falls back to the participants' defaults — accepted, the alternative is
-            // storing the leaver's choices beside the saga. countsRetryFor makes the loop charge
+            // the retry repeats the ORIGINAL command: the leaver's policy choices were stored
+            // with the saga at start (V3) precisely so a re-commanded purge does not silently
+            // fall back to the participants' defaults. countsRetryFor makes the loop charge
             // the retry counter only once this command is proven delivered — an undeliverable
             // re-command burns nothing and the next sweep simply offers the candidate again
-            out.add(purgeRetryCommand(retry.sagaId(), retry.email()));
+            out.add(purgeRetryCommand(retry.sagaId(), retry.email(), retry.policy()));
         }
         for (SagaStore.Compensated failed : swept.compensated()) {
             LOG.warn("portal purge overdue for {} despite the retries; announcing the failure "
@@ -156,13 +157,17 @@ public class EventsRouter {
             LOG.warn("dropping deletion fact with a missing or invalid id: {}", summarised(fact));
             return List.of();
         }
-        BeginOffboarding.Begun begun = begin.execute(factId, email, Instant.now(clock));
+        // the policy is stored with the saga (verbatim, only when it is the object the command
+        // would carry) so the sweeper's re-command can repeat the original command
+        JsonNode policy = fact.path("policy");
+        String storedPolicy = policy.isObject() ? write(policy) : null;
+        BeginOffboarding.Begun begun = begin.execute(factId, email, storedPolicy, Instant.now(clock));
         if (begun.completedImmediately()) {
             LOG.info("no content participants configured; portal instantly clean for {}", masked(email));
             return List.of(outcome("PORTAL_CONTENT_PURGED", email, begun.sagaId(), null));
         }
         LOG.info("commanding the content purge for {} (saga {})", masked(email), begun.sagaId());
-        return List.of(purgeCommand(begun.sagaId(), email, fact.path("policy")));
+        return List.of(purgeCommand(begun.sagaId(), email, policy));
     }
 
     private List<Outgoing> onConfirmation(JsonNode confirmation, String participant) {
@@ -173,17 +178,21 @@ public class EventsRouter {
         }
         // fresh confirmations echo the saga id from the command — the precise address, and the
         // store treats a stale one (saga no longer STARTED) as a stray from a closed case. ONLY
-        // an absent field degrades to the email lookup (old producers). A field that is present
-        // but unparseable drops like any poison pill: degrading it to the email lookup would
+        // an ABSENT field degrades to the email lookup (old producers). A field that is present
+        // but null or unparseable drops like any poison pill: a producer that WROTE the field
+        // and failed to fill it is mangled, not old, and degrading it to the email lookup would
         // reopen by the back door exactly the hole the precise address closed — a mangled echo
         // of a finished case could land on a NEWER saga for the same account
         UUID sagaId = null;
-        if (confirmation.hasNonNull("sagaId")) {
+        if (confirmation.has("sagaId")) {
+            // the raw value is safe to log verbatim: a saga id is a correlation handle, not PII —
+            // and it is exactly what an operator needs to trace the mangled producer
+            String raw = confirmation.get("sagaId").asText();
             try {
-                sagaId = UUID.fromString(confirmation.get("sagaId").asText());
+                sagaId = UUID.fromString(raw);
             } catch (IllegalArgumentException mangled) {
-                LOG.warn("dropping {} confirmation with an unparseable sagaId: {}",
-                        participant, summarised(confirmation));
+                LOG.warn("dropping {} confirmation with an unparseable sagaId \"{}\": {}",
+                        participant, raw, summarised(confirmation));
                 return List.of();
             }
         }
@@ -202,12 +211,29 @@ public class EventsRouter {
     }
 
     /**
-     * The sweeper's re-command: byte-wise the same command as {@link #purgeCommand} (minus the
-     * policy, see sweepOverdue), plus the {@code countsRetryFor} mark that lets the loop charge
-     * the retry counter only after the broker demonstrably accepted it.
+     * The sweeper's re-command: the SAME shape as {@link #purgeCommand}, built by the same
+     * {@link #purgePayload} — including the leaver's policy choices, restored verbatim from the
+     * saga — plus the {@code countsRetryFor} mark that lets the loop charge the retry counter
+     * only after the broker demonstrably accepted it.
      */
-    private Outgoing purgeRetryCommand(UUID sagaId, String email) {
-        return new Outgoing(COMMANDS_TOPIC, email, purgePayload(sagaId, email, null), null, sagaId);
+    private Outgoing purgeRetryCommand(UUID sagaId, String email, String storedPolicy) {
+        return new Outgoing(COMMANDS_TOPIC, email,
+                purgePayload(sagaId, email, storedPolicy(sagaId, storedPolicy)), null, sagaId);
+    }
+
+    /** The stored policy back into the node {@link #purgePayload} ferries; null stays null. */
+    private JsonNode storedPolicy(UUID sagaId, String storedPolicy) {
+        if (storedPolicy == null) {
+            return null;
+        }
+        try {
+            return mapper.readTree(storedPolicy);
+        } catch (Exception unreadable) {
+            // stored by us off a parsed fact, so this cannot really happen — but a re-command
+            // with the participants' defaults still beats a wedged sweeper pass
+            LOG.warn("stored policy for saga {} is unreadable; re-commanding without it", sagaId);
+            return null;
+        }
     }
 
     private String purgePayload(UUID sagaId, String email, JsonNode policy) {

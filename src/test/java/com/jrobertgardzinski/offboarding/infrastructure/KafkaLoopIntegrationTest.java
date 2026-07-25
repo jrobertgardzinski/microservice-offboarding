@@ -395,6 +395,37 @@ class KafkaLoopIntegrationTest {
                 "a stopped sweeper loop must read as stalled");
     }
 
+    // --------------- (f) readiness vs liveness: a permanent outage is UNREADY, never DEAD
+
+    @Test
+    void a_permanently_failing_pass_stalls_readiness_while_the_liveness_heartbeat_keeps_beating()
+            throws Exception {
+        String run = run();
+        String email = "wedged-" + run + "@example.com";
+        String facts = "security-events-" + run;
+        String memesTopic = "memes-events-" + run;
+        createTopics(facts, memesTopic, EventsRouter.COMMANDS_TOPIC);
+        // a store that never recovers: every consumer pass over the fact fails and backs off —
+        // the situation where /health must scream 503 while /alive must NOT invite a restart
+        // (bouncing the process would not fix the store)
+        FailingFirstStore broken = new FailingFirstStore(store, Integer.MAX_VALUE);
+        KafkaLoop loop = startLoop(broken, facts, Map.of(memesTopic, "memes"),
+                Duration.ofMillis(300), new SweepOverdue(broken, Duration.ofMinutes(5)));
+        produce(facts, email, deletionFact(UUID.randomUUID(), email, ""));
+
+        // the fact arrives within a poll; from then on every pass fails, backing off 1s, 2s, 4s —
+        // after six seconds the last COMPLETED pass is several seconds old, the heartbeats are not
+        Thread.sleep(6_000);
+        assertFalse(loop.healthy(Duration.ofSeconds(2), Duration.ofHours(1)),
+                "readiness: no consumer pass completes over a permanently failing store");
+        assertTrue(loop.alive(Duration.ofSeconds(30)),
+                "liveness: failing iterations must keep the heartbeat — the thread IS scheduling");
+
+        stop(loop);
+        assertFalse(loop.alive(Duration.ofHours(1)),
+                "a dead loop thread reads dead immediately, no stall tolerance to wait out");
+    }
+
     // ---------------------------------------------------------------------------- the wiring
 
     private KafkaLoop startLoop(SagaStore sagaStore, String factsTopic,
@@ -588,12 +619,12 @@ class KafkaLoopIntegrationTest {
         }
 
         @Override
-        public UUID start(UUID factId, String email, Instant at) {
+        public UUID start(UUID factId, String email, String policy, Instant at) {
             if (failures.get() > 0) {
                 failures.decrementAndGet();
                 throw new IllegalStateException("simulated database outage");
             }
-            return inner.start(factId, email, at);
+            return inner.start(factId, email, policy, at);
         }
 
         @Override

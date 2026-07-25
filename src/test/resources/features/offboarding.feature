@@ -57,6 +57,12 @@ Feature: Offboarding — the portal cleans up after a leaving account
     Then the purge command for alice@example.com is sent again
     And no outcome is announced yet
 
+  Scenario: The leaver's choices survive the retry
+    Given security announced that alice@example.com requested deletion choosing memes=DELETE and comments=ANONYMIZE_AUTHOR
+    When the purge deadline passes
+    Then the purge command for alice@example.com is sent again
+    And every purge command carries the choices memes=DELETE and comments=ANONYMIZE_AUTHOR
+
   Scenario: Silence outlasting every retry announces the failure, naming the partial purge
     Given security announced that alice@example.com requested deletion
     And memes confirmed its purge for alice@example.com

@@ -22,8 +22,15 @@ import java.util.UUID;
  */
 public interface SagaStore {
 
-    /** One overdue saga the sweeper re-commands instead of giving up on. */
-    record Retry(UUID sagaId, String email) {
+    /**
+     * One overdue saga the sweeper re-commands instead of giving up on. {@code policy} is the
+     * leaver's choices as stored at start — the verbatim JSON object, or null when the fact
+     * carried none — so the re-command can repeat the original command instead of a bare default.
+     */
+    record Retry(UUID sagaId, String email, String policy) {
+        public Retry(UUID sagaId, String email) {
+            this(sagaId, email, null);
+        }
     }
 
     /**
@@ -48,8 +55,16 @@ public interface SagaStore {
      * Start a saga for this email — or return the saga this exact fact already opened (a replayed
      * fact, even after completion), or the one already running for the email (a second request
      * racing the first). Only a genuinely new fact for an email with no running saga starts fresh.
+     * {@code policy} is the leaver's choices off the fact, an opaque JSON object stored verbatim
+     * (or null) — persisted so the sweeper's re-command can repeat them ({@link Retry#policy});
+     * a fact that merely joins an existing saga does not overwrite what the opening fact chose.
      */
-    UUID start(UUID factId, String email, Instant at);
+    UUID start(UUID factId, String email, String policy, Instant at);
+
+    /** Start without policy choices — the pre-policy spelling, kept for callers and tests. */
+    default UUID start(UUID factId, String email, Instant at) {
+        return start(factId, email, null, at);
+    }
 
     /**
      * Record one participant's confirmation. Fresh confirmations echo the saga id the command
@@ -76,6 +91,8 @@ public interface SagaStore {
     /**
      * The retry counter's second half: the re-commanded purge reached the broker, so the attempt
      * counts against maxRetries now — and only now. A no-op unless the saga is still STARTED.
+     * Also refreshes the saga's updated_at: the delivered re-command IS activity on the case, and
+     * a table sorted by staleness must not show a just-re-asked saga as untouched since it opened.
      */
     void retryDelivered(UUID sagaId);
 

@@ -25,7 +25,16 @@ public class BeginOffboarding {
     }
 
     public Begun execute(UUID factId, String email, Instant at) {
-        UUID sagaId = sagas.start(factId, email, at);
+        return execute(factId, email, null, at);
+    }
+
+    /**
+     * {@code policy} is the leaver's choices off the fact — an opaque JSON object, stored with
+     * the saga so the sweeper's re-command can repeat the original command instead of sending the
+     * participants back to their defaults.
+     */
+    public Begun execute(UUID factId, String email, String policy, Instant at) {
+        UUID sagaId = sagas.start(factId, email, policy, at);
         if (participants.isEmpty()) {
             sagas.complete(email, at);
             return new Begun(sagaId, true);

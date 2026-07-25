@@ -34,8 +34,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>Supervision sits around one PASS, never around the while: an infrastructure error (broker
  * away, database down) rewinds to the committed offsets, backs off — one second doubling to
- * thirty — and retries; the loops themselves never die, and each successful pass stamps a
- * liveness flag that /health watches. Within a pass the order is the at-least-once guarantee:
+ * thirty — and retries; the loops themselves never die. Each successful pass stamps a readiness
+ * flag that /health watches ({@link #healthy}), and each ITERATION — failing ones included —
+ * stamps a liveness heartbeat that /alive watches ({@link #alive}): an outage makes the service
+ * unready, only a thread that stopped being scheduled makes it dead. Within a pass the order is
+ * the at-least-once guarantee:
  * outcomes DEMONSTRABLY reach the broker (flush, then every send's future checked — flush alone
  * reports no delivery errors), then the outbox marks them announced, then — and only then — the
  * offset commits. Any failed send fails the whole pass: nothing announced for it, no offsets
@@ -59,9 +62,16 @@ public class KafkaLoop {
     private volatile boolean running = true;
     private volatile KafkaConsumer<String, String> consumer;
     private volatile KafkaProducer<String, String> producer;
-    // the liveness flags: /health answers 503 once a loop stops completing passes (see healthy())
-    private volatile long lastConsumerPassMillis;
-    private volatile long lastSweeperPassMillis;
+    // the readiness flags: /health answers 503 once a loop stops completing passes (see healthy()).
+    // System.nanoTime, not currentTimeMillis: the markers measure elapsed time, and the wall
+    // clock can jump (NTP step) — backwards would fake a 503, forwards would mask a real stall
+    private volatile long lastConsumerPassNanos;
+    private volatile long lastSweeperPassNanos;
+    // the liveness heartbeats behind /alive: stamped at the START of every loop iteration — the
+    // failing ones included — so they keep beating through a broker outage's backoff and stop
+    // only when a thread genuinely stops being scheduled (see alive())
+    private volatile long lastConsumerBeatNanos;
+    private volatile long lastSweeperBeatNanos;
     private Thread consumerThread;
     private Thread sweeperThread;
     private final AtomicBoolean started = new AtomicBoolean();
@@ -85,9 +95,12 @@ public class KafkaLoop {
             throw new IllegalStateException("this KafkaLoop is already started; "
                     + "create a new instance instead of starting one twice");
         }
-        // count liveness from here, so a service still warming up is not born unhealthy
-        lastConsumerPassMillis = System.currentTimeMillis();
-        lastSweeperPassMillis = System.currentTimeMillis();
+        // count readiness and liveness from here, so a service still warming up is not born dead
+        long now = System.nanoTime();
+        lastConsumerPassNanos = now;
+        lastSweeperPassNanos = now;
+        lastConsumerBeatNanos = now;
+        lastSweeperBeatNanos = now;
         producer = new KafkaProducer<>(producerProps(bootstrapServers));
         consumerThread = Thread.ofVirtual().name("offboarding-consumer")
                 .start(() -> consume(bootstrapServers));
@@ -97,11 +110,34 @@ public class KafkaLoop {
         Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown, "offboarding-loop-shutdown"));
     }
 
-    /** True while both loops keep completing passes within their stall tolerances. */
+    /**
+     * READINESS: true while both loops keep COMPLETING passes within their stall tolerances — a
+     * loop alive but unable to finish a pass (broker away, database down) reads unhealthy, which
+     * is what gates dependants and routing.
+     */
     public boolean healthy(Duration consumerStall, Duration sweeperStall) {
-        long now = System.currentTimeMillis();
-        return now - lastConsumerPassMillis <= consumerStall.toMillis()
-                && now - lastSweeperPassMillis <= sweeperStall.toMillis();
+        long now = System.nanoTime();
+        return now - lastConsumerPassNanos <= consumerStall.toNanos()
+                && now - lastSweeperPassNanos <= sweeperStall.toNanos();
+    }
+
+    /**
+     * LIVENESS: true while both loop threads are alive and still being scheduled — the heartbeat
+     * is stamped at the start of every iteration, failing ones included, so an infrastructure
+     * outage mid-backoff keeps /alive at 200 (restarting the process would not fix the broker)
+     * and only a thread that genuinely stopped iterating past the tolerance — or died, reported
+     * immediately — turns it 503, for an orchestrator's liveness probe to bounce the process.
+     * The tolerance must exceed the longest legitimate gap between iterations: the max backoff
+     * (30s) — Main's default of 120s covers several such gaps.
+     */
+    public boolean alive(Duration stallTolerance) {
+        if (consumerThread == null || !consumerThread.isAlive()
+                || sweeperThread == null || !sweeperThread.isAlive()) {
+            return false;   // a dead thread is definitively gone; no threshold to wait out
+        }
+        long now = System.nanoTime();
+        return now - lastConsumerBeatNanos <= stallTolerance.toNanos()
+                && now - lastSweeperBeatNanos <= stallTolerance.toNanos();
     }
 
     private void consume(String bootstrapServers) {
@@ -114,6 +150,9 @@ public class KafkaLoop {
             this.consumer = consumer;
             consumer.subscribe(topics);
             while (running && !Thread.currentThread().isInterrupted()) {
+                // the liveness heartbeat: every iteration, including one about to fail or back
+                // off — /alive watches scheduling, not success (success is /health's business)
+                lastConsumerBeatNanos = System.nanoTime();
                 try {
                     if (rewindNeeded) {
                         rewindToCommitted(consumer);   // throws if it cannot; the flag survives
@@ -137,7 +176,7 @@ public class KafkaLoop {
                     producer.flush();            // outcomes on the broker...
                     settleDeliveries(sent);      // ...PROVEN there, and the outbox marked...
                     consumer.commitSync();       // ...and only then does the offset move
-                    lastConsumerPassMillis = System.currentTimeMillis();
+                    lastConsumerPassNanos = System.nanoTime();
                     backoffMs = INITIAL_BACKOFF_MS;
                 } catch (WakeupException woken) {
                     // the shutdown hook waking a blocked poll; the while condition decides
@@ -158,6 +197,8 @@ public class KafkaLoop {
     private void sweep() {
         long backoffMs = INITIAL_BACKOFF_MS;
         while (running && !Thread.currentThread().isInterrupted()) {
+            // the liveness heartbeat, exactly like the consumer's: iterations, not successes
+            lastSweeperBeatNanos = System.nanoTime();
             try {
                 Thread.sleep(sweepEvery.toMillis());
                 List<Sent> sent = new ArrayList<>();
@@ -167,12 +208,15 @@ public class KafkaLoop {
                 producer.flush();            // same order as the consumer: broker first (proven),
                 settleDeliveries(sent);      // outbox second — a failed send stays unannounced
                                              // and the NEXT sweep simply tries again
-                lastSweeperPassMillis = System.currentTimeMillis();
+                lastSweeperPassNanos = System.nanoTime();
                 backoffMs = INITIAL_BACKOFF_MS;
             } catch (InterruptedException stopped) {
                 Thread.currentThread().interrupt();
             } catch (Exception infrastructure) {
-                LOG.warn("offboarding sweeper pass failed; retrying", infrastructure);
+                // ERROR, matching the consumer's failed pass: an unfinished sweep is the same
+                // class of trouble (retries not offered, outcomes not re-announced), not a shrug
+                LOG.error("offboarding sweeper pass failed; retrying", infrastructure);
+                MetricsEndpoint.sweeperPassFailed();
                 backoffMs = pause(backoffMs);
             }
         }
@@ -208,6 +252,7 @@ public class KafkaLoop {
             }
             if (each.outgoing().countsRetryFor() != null) {
                 store.retryDelivered(each.outgoing().countsRetryFor());
+                MetricsEndpoint.retryDelivered();
             }
         }
         if (firstFailure != null) {

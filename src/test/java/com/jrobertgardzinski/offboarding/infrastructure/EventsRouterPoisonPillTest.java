@@ -78,6 +78,20 @@ class EventsRouterPoisonPillTest {
     }
 
     @Test
+    void a_confirmation_with_an_explicit_null_sagaId_drops_and_confirms_nothing() {
+        // "sagaId": null is a PRESENT field whose value the producer failed to fill — a mangled
+        // echo, not an old producer that never learned the field. It must drop like the garbage
+        // spelling above; degrading it to the email lookup would reopen the same back door
+        RouterFixture fixture = router().withRunningSagaFor("leaver@example.com");
+        List<EventsRouter.Outgoing> out = fixture.router.handle("memes-events",
+                "{\"type\":\"USER_CONTENT_PURGED\",\"sagaId\":null,"
+                        + "\"email\":\"leaver@example.com\",\"version\":1}");
+        assertEquals(List.of(), out);
+        assertTrue(fixture.store.all().get(0).confirmed.isEmpty(),
+                "an explicit null sagaId must not degrade to the email's running saga");
+    }
+
+    @Test
     void a_confirmation_without_the_sagaId_field_lands_via_the_email_fallback() {
         // the fallback exists solely for old producers that never learned the field — ABSENT is
         // the only spelling that may degrade to the email lookup

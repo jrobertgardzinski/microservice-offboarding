@@ -40,7 +40,7 @@ public class JdbcSagaStore implements SagaStore {
     }
 
     @Override
-    public UUID start(UUID factId, String email, Instant at) {
+    public UUID start(UUID factId, String email, String policy, Instant at) {
         try (Connection connection = dataSource.getConnection()) {
             // two attempts at most: the read-then-insert can lose a race, but the UNIQUE
             // constraints turn the loss into a 23505 and the second read finds the winner's saga
@@ -56,14 +56,15 @@ public class JdbcSagaStore implements SagaStore {
                 UUID id = UUID.randomUUID();
                 try (PreparedStatement insert = connection.prepareStatement(
                         "INSERT INTO offboarding_sagas "
-                                + "(id, fact_id, email, running_email, state, created_at, updated_at) "
-                                + "VALUES (?, ?, ?, ?, 'STARTED', ?, ?)")) {
+                                + "(id, fact_id, email, running_email, state, policy, created_at, updated_at) "
+                                + "VALUES (?, ?, ?, ?, 'STARTED', ?, ?, ?)")) {
                     insert.setObject(1, id);
                     insert.setObject(2, factId);
                     insert.setString(3, email);
                     insert.setString(4, email);   // the one-running-saga-per-email latch (V2)
-                    insert.setTimestamp(5, Timestamp.from(at));
+                    insert.setString(5, policy);  // the leaver's choices, verbatim (V3) — may be null
                     insert.setTimestamp(6, Timestamp.from(at));
+                    insert.setTimestamp(7, Timestamp.from(at));
                     insert.executeUpdate();
                     return id;
                 } catch (SQLException raced) {
@@ -145,17 +146,17 @@ public class JdbcSagaStore implements SagaStore {
         List<Retry> retries = new ArrayList<>();
         List<Compensated> compensated = new ArrayList<>();
         try (Connection connection = dataSource.getConnection()) {
-            record Overdue(UUID id, String email, int retriesSoFar) {
+            record Overdue(UUID id, String email, int retriesSoFar, String policy) {
             }
             List<Overdue> overdue = new ArrayList<>();
             try (PreparedStatement select = connection.prepareStatement(
-                    "SELECT id, email, retries FROM offboarding_sagas "
+                    "SELECT id, email, retries, policy FROM offboarding_sagas "
                             + "WHERE state = 'STARTED' AND created_at < ?")) {
                 select.setTimestamp(1, Timestamp.from(cutoff));
                 try (ResultSet rows = select.executeQuery()) {
                     while (rows.next()) {
                         overdue.add(new Overdue(rows.getObject(1, UUID.class),
-                                rows.getString(2), rows.getInt(3)));
+                                rows.getString(2), rows.getInt(3), rows.getString(4)));
                     }
                 }
             }
@@ -165,8 +166,9 @@ public class JdbcSagaStore implements SagaStore {
                     // candidate back WITHOUT counting: the attempt is charged by retryDelivered()
                     // only after the resent PURGE_USER_CONTENT demonstrably reached the broker.
                     // Counting here would let a dead broker burn all retries without a single
-                    // command on the wire, and the saga would compensate having never re-asked
-                    retries.add(new Retry(saga.id(), saga.email()));
+                    // command on the wire, and the saga would compensate having never re-asked.
+                    // The stored policy rides along so the re-command repeats the original
+                    retries.add(new Retry(saga.id(), saga.email(), saga.policy()));
                 } else {
                     // retries exhausted — give up, freeing the email for a future saga, and tell
                     // the caller who DID confirm so the failure can name the partial purge
@@ -191,10 +193,14 @@ public class JdbcSagaStore implements SagaStore {
     @Override
     public void retryDelivered(UUID sagaId) {
         // the delivered-first discipline (see SagaStore): only a re-command the broker ACCEPTED
-        // moves the counter, so the state guard keeps a late delivery off a finished saga
+        // moves the counter, so the state guard keeps a late delivery off a finished saga.
+        // updated_at moves too — the database's own clock, because this method is the transport's
+        // report of a delivery that JUST happened; the saga's business timestamps stay the
+        // caller's. Only STARTED sagas qualify, so the finished states' age guards never see it
         try (Connection connection = dataSource.getConnection();
              PreparedStatement update = connection.prepareStatement(
-                     "UPDATE offboarding_sagas SET retries = retries + 1 "
+                     "UPDATE offboarding_sagas SET retries = retries + 1, "
+                             + "updated_at = CURRENT_TIMESTAMP "
                              + "WHERE id = ? AND state = 'STARTED'")) {
             update.setObject(1, sagaId);
             update.executeUpdate();

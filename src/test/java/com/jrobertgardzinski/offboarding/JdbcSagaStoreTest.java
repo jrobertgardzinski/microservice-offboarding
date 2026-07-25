@@ -222,6 +222,45 @@ class JdbcSagaStoreTest {
     }
 
     @Test
+    void the_stored_policy_rides_every_retry_candidate() {
+        // the leaver's choices, stored at start (V3), must come back with the sweep's retry so
+        // the re-commanded purge repeats the ORIGINAL command instead of the participants' defaults
+        String policy = "{\"memes\":\"DELETE\",\"comments\":\"ANONYMIZE_AUTHOR\"}";
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", policy, T0);
+        SagaStore.SweepResult swept = store.sweepOverdue(T0.plusSeconds(120), 3, T0.plusSeconds(130));
+        assertEquals(List.of(new SagaStore.Retry(saga, "alice@example.com", policy)), swept.retries(),
+                "the retry must carry the policy exactly as stored");
+    }
+
+    @Test
+    void a_saga_started_without_policy_retries_without_one() {
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        SagaStore.SweepResult swept = store.sweepOverdue(T0.plusSeconds(120), 3, T0.plusSeconds(130));
+        assertEquals(List.of(new SagaStore.Retry(saga, "alice@example.com", null)), swept.retries(),
+                "no stored choices means an honestly bare re-command — never an invented policy");
+    }
+
+    @Test
+    void a_delivered_retry_bumps_updated_at() throws Exception {
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        store.retryDelivered(saga);
+        assertTrue(updatedAtInDb(saga).isAfter(T0),
+                "the delivered re-command is activity on the case; updated_at must move");
+    }
+
+    private Instant updatedAtInDb(UUID saga) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT updated_at FROM offboarding_sagas WHERE id = ?")) {
+            select.setObject(1, saga);
+            try (var rows = select.executeQuery()) {
+                rows.next();
+                return rows.getTimestamp(1).toInstant();
+            }
+        }
+    }
+
+    @Test
     void a_delivered_retry_is_not_counted_against_a_finished_saga() throws Exception {
         UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
         store.complete("alice@example.com", T0);

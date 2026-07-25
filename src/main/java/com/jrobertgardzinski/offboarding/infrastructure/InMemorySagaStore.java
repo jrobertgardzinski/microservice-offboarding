@@ -27,15 +27,18 @@ public class InMemorySagaStore implements SagaStore {
         /** The mini-outbox flag: set only after the outcome demonstrably reached the broker. */
         public boolean announced;
         public int retries;
+        /** The leaver's choices as stored at start — verbatim JSON, or null (see V3). */
+        public final String policy;
 
-        Saga(UUID factId, String email, Instant createdAt) {
-            this(UUID.randomUUID(), factId, email, createdAt);
+        Saga(UUID factId, String email, String policy, Instant createdAt) {
+            this(UUID.randomUUID(), factId, email, policy, createdAt);
         }
 
-        Saga(UUID id, UUID factId, String email, Instant createdAt) {
+        Saga(UUID id, UUID factId, String email, String policy, Instant createdAt) {
             this.id = id;
             this.factId = factId;
             this.email = email;
+            this.policy = policy;
             this.createdAt = createdAt;
             this.updatedAt = createdAt;
         }
@@ -48,13 +51,13 @@ public class InMemorySagaStore implements SagaStore {
     private final Map<UUID, Saga> sagas = new LinkedHashMap<>();
 
     @Override
-    public UUID start(UUID factId, String email, Instant at) {
+    public UUID start(UUID factId, String email, String policy, Instant at) {
         return sagas.values().stream()
                 .filter(saga -> saga.factId.equals(factId)).findFirst()
                 .or(() -> running(email))
                 .map(saga -> saga.id)
                 .orElseGet(() -> {
-                    Saga saga = new Saga(factId, email, at);
+                    Saga saga = new Saga(factId, email, policy, at);
                     sagas.put(saga.id, saga);
                     return saga.id;
                 });
@@ -97,8 +100,9 @@ public class InMemorySagaStore implements SagaStore {
             if ("STARTED".equals(saga.state) && saga.createdAt.isBefore(cutoff)) {
                 if (saga.retries < maxRetries) {
                     // a candidate, not a charge: retryDelivered() moves the counter once the
-                    // re-command reached the broker — mirrors the JDBC adapter
-                    retries.add(new Retry(saga.id, saga.email));
+                    // re-command reached the broker — mirrors the JDBC adapter. The stored
+                    // policy rides along so the re-command repeats the original
+                    retries.add(new Retry(saga.id, saga.email, saga.policy));
                 } else {
                     saga.state = "COMPENSATED";
                     saga.updatedAt = at;
@@ -114,6 +118,9 @@ public class InMemorySagaStore implements SagaStore {
         Saga saga = sagas.get(sagaId);
         if (saga != null && "STARTED".equals(saga.state)) {
             saga.retries++;
+            // the delivery just happened, so wall clock — mirrors the JDBC adapter's
+            // CURRENT_TIMESTAMP; harmless to the finished states' age guards (STARTED only)
+            saga.updatedAt = Instant.now();
         }
     }
 
@@ -150,7 +157,7 @@ public class InMemorySagaStore implements SagaStore {
      * a stray by design; see the JDBC adapter's confirm()).
      */
     UUID startWithId(UUID sagaId, UUID factId, String email, Instant at) {
-        Saga saga = new Saga(sagaId, factId, email, at);
+        Saga saga = new Saga(sagaId, factId, email, null, at);
         sagas.put(saga.id, saga);
         return saga.id;
     }
