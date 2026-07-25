@@ -9,6 +9,7 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.InterruptException;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.header.Header;
 import org.slf4j.Logger;
@@ -57,8 +58,10 @@ public class KafkaLoop {
      * The producer's delivery clocks, set EXPLICITLY because /alive depends on them: a broker
      * outage with records in the buffer makes {@code flush()} (and a blocked {@code send()})
      * hold a loop iteration for up to {@code delivery.timeout.ms} — with Kafka's default of
-     * 120s one such iteration would outlast the /alive stall tolerance (same default 120s) and
-     * a mere broker outage would read as a dead thread, restarting a pod a restart cannot fix.
+     * 120s this ONE block would be four times the next-largest term in
+     * {@link Main#CONSUMER_WORST_ITERATION} and would drag the derived floor past four minutes,
+     * so a mere broker outage would either read as a dead thread or force an absurd tolerance —
+     * either way restarting a pod over something a restart cannot fix.
      * 30s bounds the block well inside the tolerance; {@link Main#ALIVE_STALL_FLOOR} is derived
      * from these same constants so the two can never drift apart again.
      */
@@ -81,6 +84,13 @@ public class KafkaLoop {
      * {@link Main#ALIVE_STALL_FLOOR} is derived from this constant too.
      */
     static final Duration API_TIMEOUT = Duration.ofSeconds(20);
+
+    /**
+     * One poll's wait. Small on purpose — the loop must come round often enough to re-probe and
+     * to stamp its beat — and named because {@link Main#ALIVE_STALL_FLOOR} adds it up with every
+     * other block of one iteration (the same role collections' {@code POLL_EVERY} plays there).
+     */
+    static final Duration POLL_TIMEOUT = Duration.ofSeconds(1);
 
     /**
      * The /health honesty probe's cadence and patience. An EMPTY poll against a DEAD broker
@@ -196,6 +206,13 @@ public class KafkaLoop {
      * through an outage. The consumer therefore backs its passes with a periodic round trip that
      * demands an answer (see {@link #PROBE_EVERY}); a broker that stops answering stalls readiness
      * within one cadence plus one {@link #PROBE_TIMEOUT}, without touching liveness.
+     *
+     * <p>The cadence is therefore PART of the detection time, and the configured stall tolerance
+     * is not the whole promise: a broker that dies the instant AFTER a successful probe leaves
+     * the marker moving for up to one {@link #PROBE_EVERY} (10s) before the next probe even asks,
+     * plus its {@link #PROBE_TIMEOUT} (5s) — so a 60s {@code OFFBOARDING_CONSUMER_STALL_SEC}
+     * really means "noticed within about 75s", not "within 60s". Read the env as the tolerance it
+     * is, not as a detection deadline.
      */
     public boolean healthy(Duration consumerStall, Duration sweeperStall) {
         long now = System.nanoTime();
@@ -210,13 +227,16 @@ public class KafkaLoop {
      * and only a thread that genuinely stopped iterating past the tolerance — or died, reported
      * immediately — turns it 503, for an orchestrator's liveness probe to bounce the process.
      * The tolerance must exceed the longest legitimate gap between iterations, and that gap is
-     * paid in CONSUMER clocks as much as in producer ones: a sweep interval, a send/flush blocked
-     * for up to {@link #DELIVERY_TIMEOUT}/{@link #MAX_BLOCK} (30s), a {@code commitSync()} or a
-     * rewind's {@code committed()} lookup blocked for up to {@link #API_TIMEOUT} (20s — pinned
-     * down for exactly this reason; Kafka's own default is 60s), the readiness probe's
-     * {@link #PROBE_TIMEOUT} (5s), and then one {@link #MAX_BACKOFF} (30s).
-     * {@link Main#ALIVE_STALL_FLOOR} computes the floor from these same constants (plus a
-     * margin), and Main's default of 120s covers the whole worst-case gap.
+     * paid in CONSUMER clocks and DATABASE clocks as much as in producer ones, and they add up
+     * INSIDE one iteration rather than replacing each other: the rewind's {@code committed()}
+     * lookup ({@link #API_TIMEOUT}, 20s — pinned down for exactly this reason; Kafka's own
+     * default is 60s), the readiness probe ({@link #PROBE_TIMEOUT}, 5s), the poll
+     * ({@link #POLL_TIMEOUT}, 1s), the store ({@link Database#WORST_BLOCK}, 40s), the flush
+     * ({@link #DELIVERY_TIMEOUT}/{@link #MAX_BLOCK}, 30s), the {@code commitSync()}
+     * ({@link #API_TIMEOUT} again, 20s) and finally one {@link #MAX_BACKOFF} (30s).
+     * {@link Main#CONSUMER_WORST_ITERATION} is that sum (146s),
+     * {@link Main#ALIVE_STALL_FLOOR} is it plus a margin (183s), and Main's default of 240s sits
+     * above the floor rather than under it.
      */
     public boolean alive(Duration stallTolerance) {
         if (consumerThread == null || !consumerThread.isAlive()
@@ -257,7 +277,7 @@ public class KafkaLoop {
                         probeBroker(consumer);
                         nextProbeNanos = System.nanoTime() + PROBE_EVERY.toNanos();
                     }
-                    ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));
+                    ConsumerRecords<String, String> records = consumer.poll(POLL_TIMEOUT);
                     List<Sent> sent = new ArrayList<>();
                     for (ConsumerRecord<String, String> record : records) {
                         String cid = header(record, CID_HEADER);
@@ -277,8 +297,13 @@ public class KafkaLoop {
                     consumer.commitSync();       // ...and only then does the offset move
                     lastConsumerPassNanos = System.nanoTime();
                     backoffMs = INITIAL_BACKOFF_MS;
-                } catch (WakeupException woken) {
-                    // the shutdown hook waking a blocked poll; the while condition decides
+                } catch (WakeupException | InterruptException stopping) {
+                    // the shutdown waking us: wakeup() cuts a blocked poll, interrupt() cuts
+                    // everything else (Kafka turns it into InterruptException, flag already
+                    // restored). BOTH mean "we are stopping", and neither is a broker problem —
+                    // shutdown() sends both, so catching only the wakeup used to let a perfectly
+                    // normal stop fall through to the ERROR branches below. The while condition
+                    // decides; nothing was consumed that a rewind would owe anything to
                 } catch (BrokerSilent silent) {
                     // the probe found nobody home. Unlike every other failure NOTHING was
                     // consumed here, so there is nothing to rewind — raising the flag would make
@@ -398,13 +423,23 @@ public class KafkaLoop {
      * {@code listTopics} would ask for every topic in the cluster, a needlessly fat answer for a
      * question this narrow. Any failure becomes {@link BrokerSilent} so the pass can tell "the
      * broker did not answer" (nothing consumed, nothing to rewind) from "handling failed" (a
-     * batch is in flight and must be redelivered); a shutdown's wakeup rides through untouched,
-     * or the stop would be swallowed as a broker problem.
+     * batch is in flight and must be redelivered); BOTH of shutdown's signals ride through
+     * untouched, or a stop would be reported as a broker problem.
+     *
+     * <p>Both, because {@link #shutdown()} sends both: {@code wakeup()} for a blocked poll and
+     * {@code interrupt()} for the rest, and Kafka answers the interrupt with its own
+     * {@link InterruptException}. Shielding only the wakeup meant every ordinary restart logged
+     * "got no answer from the broker" at ERROR while the broker was perfectly fine — the mirror
+     * image of collections' consumer, which shields the interrupt (it never calls wakeup()).
+     *
+     * <p>Takes the {@code Consumer} INTERFACE, not the concrete client: the shields are the whole
+     * point of this method, and a test can only prove they are there by throwing each signal at
+     * it. Package-private for that test.
      */
-    private void probeBroker(KafkaConsumer<String, String> consumer) {
+    void probeBroker(org.apache.kafka.clients.consumer.Consumer<String, String> consumer) {
         try {
             consumer.partitionsFor(probeTopic, probeTimeout);
-        } catch (WakeupException stopping) {
+        } catch (WakeupException | InterruptException stopping) {
             throw stopping;
         } catch (Exception unanswered) {
             throw new BrokerSilent(probeTimeout, unanswered);

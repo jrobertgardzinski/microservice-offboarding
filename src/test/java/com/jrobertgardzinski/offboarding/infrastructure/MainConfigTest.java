@@ -91,23 +91,71 @@ class MainConfigTest {
     }
 
     @Test
-    void the_alive_floor_is_derived_from_the_loop_clocks_and_the_backoff() {
-        // never a magic number: 2 x max(delivery.timeout, default.api.timeout, max backoff) +
-        // one sweep interval + one broker probe, plus the margin — recomputed here from the same
-        // constants so a drift on either side breaks the build
-        Duration longestBlock = longest(KafkaLoop.DELIVERY_TIMEOUT, KafkaLoop.API_TIMEOUT,
-                KafkaLoop.MAX_BACKOFF);
-        Duration derived = longestBlock.multipliedBy(2)
-                .plus(Main.SWEEP_EVERY)
-                .plus(KafkaLoop.PROBE_TIMEOUT);
-        assertEquals(Duration.ofSeconds(Math.ceilDiv(
-                        derived.toMillis() * (100 + Main.FLOOR_MARGIN_PERCENT) / 100, 1_000)),
-                Main.ALIVE_STALL_FLOOR);
-        assertTrue(Main.ALIVE_STALL_FLOOR.compareTo(derived) > 0,
-                "the floor must sit strictly ABOVE the bare arithmetic: alive() compares with"
-                        + " <=, and a GC pause on top of an honest worst case must not read dead");
-        assertTrue(Main.ALIVE_STALL_FLOOR.compareTo(Duration.ofSeconds(120)) < 0,
-                "the documented 120s default must sit above the floor");
+    void the_alive_floor_covers_the_whole_worst_legal_iteration() {
+        // The finding this pins. The floor used to be 2 x max(delivery.timeout, api.timeout,
+        // max backoff) + a sweep + a probe = 100s, and the test recomputed that same formula —
+        // which passes no matter how wrong the formula is. A worst legal iteration actually
+        // spends its blocks in SEQUENCE, and back then they came to 106s: the "safe minimum" sat
+        // BELOW the case it was sold as covering. So the blocks are enumerated here from what
+        // one pass really calls, in order, and the floor must COVER their sum.
+        Duration worstIteration = KafkaLoop.API_TIMEOUT      // rewindToCommitted(): committed()
+                .plus(KafkaLoop.PROBE_TIMEOUT)               // the /health honesty probe
+                .plus(KafkaLoop.POLL_TIMEOUT)                // poll()
+                .plus(Database.WORST_BLOCK)                  // the saga store, via router.handle
+                .plus(KafkaLoop.DELIVERY_TIMEOUT)            // producer.flush()
+                .plus(KafkaLoop.API_TIMEOUT)                 // commitSync()
+                .plus(KafkaLoop.MAX_BACKOFF);                // pause() before the retry
+        assertEquals(worstIteration, Main.CONSUMER_WORST_ITERATION,
+                "Main must add up the blocks a pass really spends, in full");
+        assertTrue(Main.ALIVE_STALL_FLOOR.compareTo(worstIteration) > 0,
+                "the floor must sit strictly ABOVE the worst legal iteration: alive() compares"
+                        + " with <=, and a GC pause on top of an honest worst case must not read"
+                        + " dead. Floor " + Main.ALIVE_STALL_FLOOR.toSeconds() + "s vs iteration "
+                        + worstIteration.toSeconds() + "s");
+        assertTrue(Main.ALIVE_STALL_FLOOR.compareTo(Main.SWEEPER_WORST_ITERATION) > 0,
+                "and above the OTHER loop's worst iteration too — both threads share one"
+                        + " tolerance, so the floor must cover whichever is worse");
+
+        // and the absolute values, spelled out: a silent drift in any constant above (or in the
+        // margin) has to break the build with the new number visible, not slide through
+        assertEquals(Duration.ofSeconds(146), Main.CONSUMER_WORST_ITERATION,
+                "20 (committed) + 5 (probe) + 1 (poll) + 40 (database) + 30 (flush)"
+                        + " + 20 (commit) + 30 (backoff)");
+        assertEquals(Duration.ofSeconds(115), Main.SWEEPER_WORST_ITERATION,
+                "15 (sweep interval) + 40 (database) + 30 (flush) + 30 (backoff)");
+        assertEquals(Duration.ofSeconds(183), Main.ALIVE_STALL_FLOOR, "146s + 25% margin");
+    }
+
+    @Test
+    void the_code_default_sits_above_the_floor_instead_of_being_corrected_by_it() {
+        // a default the floor silently raises is not a default: the javadoc, the k8s manifests
+        // and the operator would all be quoting a number the service never uses. 120s stopped
+        // being one the moment the floor was computed honestly (183s)
+        assertTrue(Main.DEFAULT_ALIVE_STALL.compareTo(Main.ALIVE_STALL_FLOOR) >= 0,
+                "OFFBOARDING_ALIVE_STALL_SEC's default (" + Main.DEFAULT_ALIVE_STALL.toSeconds()
+                        + "s) must not be below the floor (" + Main.ALIVE_STALL_FLOOR.toSeconds()
+                        + "s)");
+        assertEquals(Main.DEFAULT_ALIVE_STALL,
+                Main.flooredAliveStall("OFFBOARDING_ALIVE_STALL_SEC", Main.DEFAULT_ALIVE_STALL),
+                "and it must therefore pass through the floor untouched");
+    }
+
+    @Test
+    void the_database_clocks_are_a_term_of_the_floor_not_an_unbounded_wait() {
+        // the last unguarded block in the loop: pgjdbc leaves socketTimeout at 0 = forever, so a
+        // SILENT database (partition, frozen node, a DELETE behind somebody else's lock) used to
+        // wedge the loop thread with no bound at all — no beat, /alive 503, restart, same lock
+        assertTrue(Database.SOCKET_TIMEOUT.toSeconds() > 0,
+                "an unbounded socket read is an unbounded liveness gap");
+        assertTrue(Database.STATEMENT_TIMEOUT.compareTo(Database.SOCKET_TIMEOUT) < 0,
+                "the server-side cancel must fire BEFORE the client abandons the socket, or the"
+                        + " lock waiter outlives the connection that was waiting on it");
+        assertEquals(Database.CONNECTION_TIMEOUT.plus(Database.SOCKET_TIMEOUT),
+                Database.WORST_BLOCK,
+                "the two chain in the worst case: a near-full wait for a connection, then a"
+                        + " silent read on it");
+        assertTrue(Main.CONSUMER_WORST_ITERATION.compareTo(Database.WORST_BLOCK) > 0,
+                "and the floor's arithmetic must actually carry that block");
     }
 
     @Test
@@ -128,16 +176,6 @@ class MainConfigTest {
                 "two consumer API waits and a backoff must still fit inside the tolerance");
     }
 
-    private static Duration longest(Duration first, Duration... rest) {
-        Duration longest = first;
-        for (Duration candidate : rest) {
-            if (candidate.compareTo(longest) > 0) {
-                longest = candidate;
-            }
-        }
-        return longest;
-    }
-
     @Test
     void an_alive_stall_below_the_derived_floor_is_floored() {
         // a tolerance below the floor would let a broker outage (send/flush legitimately blocked
@@ -150,8 +188,8 @@ class MainConfigTest {
 
     @Test
     void an_alive_stall_at_or_above_the_derived_floor_is_kept() {
-        assertEquals(Duration.ofSeconds(120), Main.flooredAliveStall("OFFBOARDING_ALIVE_STALL_SEC",
-                Duration.ofSeconds(120)));
+        assertEquals(Duration.ofSeconds(300), Main.flooredAliveStall("OFFBOARDING_ALIVE_STALL_SEC",
+                Duration.ofSeconds(300)));
         assertEquals(Main.ALIVE_STALL_FLOOR, Main.flooredAliveStall("OFFBOARDING_ALIVE_STALL_SEC",
                 Main.ALIVE_STALL_FLOOR));
     }
