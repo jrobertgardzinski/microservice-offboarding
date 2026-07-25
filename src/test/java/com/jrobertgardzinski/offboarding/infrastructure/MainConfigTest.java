@@ -91,14 +91,51 @@ class MainConfigTest {
     }
 
     @Test
-    void the_alive_floor_is_derived_from_the_producer_clocks_and_the_backoff() {
-        // never a magic number: 2 x max(delivery.timeout, max backoff) + one sweep interval —
-        // recomputed here from the same constants so a drift in either side breaks the build
-        Duration longestBlock = KafkaLoop.DELIVERY_TIMEOUT.compareTo(KafkaLoop.MAX_BACKOFF) >= 0
-                ? KafkaLoop.DELIVERY_TIMEOUT : KafkaLoop.MAX_BACKOFF;
-        assertEquals(longestBlock.multipliedBy(2).plus(Main.SWEEP_EVERY), Main.ALIVE_STALL_FLOOR);
+    void the_alive_floor_is_derived_from_the_loop_clocks_and_the_backoff() {
+        // never a magic number: 2 x max(delivery.timeout, default.api.timeout, max backoff) +
+        // one sweep interval + one broker probe, plus the margin — recomputed here from the same
+        // constants so a drift on either side breaks the build
+        Duration longestBlock = longest(KafkaLoop.DELIVERY_TIMEOUT, KafkaLoop.API_TIMEOUT,
+                KafkaLoop.MAX_BACKOFF);
+        Duration derived = longestBlock.multipliedBy(2)
+                .plus(Main.SWEEP_EVERY)
+                .plus(KafkaLoop.PROBE_TIMEOUT);
+        assertEquals(Duration.ofSeconds(Math.ceilDiv(
+                        derived.toMillis() * (100 + Main.FLOOR_MARGIN_PERCENT) / 100, 1_000)),
+                Main.ALIVE_STALL_FLOOR);
+        assertTrue(Main.ALIVE_STALL_FLOOR.compareTo(derived) > 0,
+                "the floor must sit strictly ABOVE the bare arithmetic: alive() compares with"
+                        + " <=, and a GC pause on top of an honest worst case must not read dead");
         assertTrue(Main.ALIVE_STALL_FLOOR.compareTo(Duration.ofSeconds(120)) < 0,
                 "the documented 120s default must sit above the floor");
+    }
+
+    @Test
+    void the_consumers_own_blocking_clock_is_explicit_and_inside_the_alive_floor() {
+        // the finding this pins: only the PRODUCER's clocks used to be set, so commitSync(),
+        // the rewind's committed() lookup and the readiness probe each still waited Kafka's 60s
+        // default.api.timeout.ms on a dead broker — one of those plus one max backoff already
+        // outlasts the old 75s floor, and a plain outage would read as a wedged thread
+        assertEquals(String.valueOf(KafkaLoop.API_TIMEOUT.toMillis()),
+                KafkaLoop.consumerProps("localhost:9092").getProperty("default.api.timeout.ms"),
+                "the consumer's api timeout must be set explicitly, never left at Kafka's 60s");
+        assertEquals(String.valueOf(KafkaLoop.REQUEST_TIMEOUT.toMillis()),
+                KafkaLoop.consumerProps("localhost:9092").getProperty("request.timeout.ms"));
+        assertTrue(KafkaLoop.REQUEST_TIMEOUT.compareTo(KafkaLoop.API_TIMEOUT) < 0,
+                "one in-flight request must fit inside one API call");
+        assertTrue(Main.ALIVE_STALL_FLOOR.compareTo(
+                        KafkaLoop.API_TIMEOUT.multipliedBy(2).plus(KafkaLoop.MAX_BACKOFF)) > 0,
+                "two consumer API waits and a backoff must still fit inside the tolerance");
+    }
+
+    private static Duration longest(Duration first, Duration... rest) {
+        Duration longest = first;
+        for (Duration candidate : rest) {
+            if (candidate.compareTo(longest) > 0) {
+                longest = candidate;
+            }
+        }
+        return longest;
     }
 
     @Test

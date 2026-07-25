@@ -466,7 +466,7 @@ class KafkaLoopIntegrationTest {
                 new RecordConfirmation(store, Set.of()),
                 new SweepOverdue(store, Duration.ofMinutes(5)), MAPPER, Clock.systemUTC());
         KafkaLoop loop = new KafkaLoop(router, store, List.of(facts), Duration.ofMillis(200),
-                deliveryTimeout, Duration.ofSeconds(1), deliveryTimeout);
+                deliveryTimeout, Duration.ofSeconds(1), deliveryTimeout, Duration.ofSeconds(1));
         loop.start("localhost:1");
         loops.add(loop);
 
@@ -483,6 +483,45 @@ class KafkaLoopIntegrationTest {
         // readiness is allowed — expected, even — to scream through the same outage
         assertFalse(loop.healthy(Duration.ofHours(1), Duration.ofSeconds(2)),
                 "the sweeper cannot COMPLETE a pass against dead air, so /health reports it");
+    }
+
+    // ------ (h) /health vs SILENCE: a quiet instance must not mistake dead air for good health
+
+    @Test
+    void a_dead_broker_on_a_quiet_topic_fails_the_probe_and_stalls_readiness_not_liveness()
+            throws Exception {
+        String run = run();
+        String facts = "security-events-" + run;
+        // nothing listens on port 1, and nothing is produced: every poll comes back empty and
+        // commitSync() with nothing consumed is a no-op, so before the honesty probe this loop
+        // stamped a COMPLETED pass every second — /health answered 200 straight through an
+        // outage it promises to report (the same lie collections' quiet topic used to tell).
+        // The sweeper sleeps an hour, so the verdict below is the consumer's alone
+        EventsRouter router = new EventsRouter(facts, Map.of(),
+                new BeginOffboarding(store, Set.of()),
+                new RecordConfirmation(store, Set.of()),
+                new SweepOverdue(store, Duration.ofMinutes(5)), MAPPER, Clock.systemUTC());
+        KafkaLoop loop = new KafkaLoop(router, store, List.of(facts), Duration.ofHours(1),
+                Duration.ofSeconds(2), Duration.ofSeconds(1), Duration.ofSeconds(2),
+                Duration.ofSeconds(1));   // the seam: 1s of probe patience instead of 5
+        loop.start("localhost:1");
+        loops.add(loop);
+
+        // the first iteration probes, so the pass marker freezes at once: within the probe's
+        // patience plus the tolerance asserted here, /health has to be reporting the outage
+        awaitTrue("readiness to stall once the probe finds no broker", Duration.ofSeconds(20),
+                () -> !loop.healthy(Duration.ofSeconds(3), Duration.ofHours(1)));
+        // through the failing probes and their growing backoff the beat keeps beating: the
+        // silence freezes readiness ONLY, it never asks for a rewind and never wedges a thread
+        long observeUntil = System.currentTimeMillis() + 8_000;
+        while (System.currentTimeMillis() < observeUntil) {
+            assertTrue(loop.alive(Duration.ofSeconds(30)),
+                    "liveness must stay green through it: the thread keeps iterating, and"
+                            + " restarting the pod would not bring the broker back");
+            assertFalse(loop.healthy(Duration.ofSeconds(3), Duration.ofHours(1)),
+                    "and readiness must stay 503 for as long as the broker keeps silent");
+            Thread.sleep(250);
+        }
     }
 
     // ---------------------------------------------------------------------------- the wiring

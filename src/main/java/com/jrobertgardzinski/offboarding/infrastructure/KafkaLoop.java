@@ -63,10 +63,44 @@ public class KafkaLoop {
      * from these same constants so the two can never drift apart again.
      */
     static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(30);
-    /** One in-flight request's timeout; two of these fit inside {@link #DELIVERY_TIMEOUT}. */
+    /**
+     * One in-flight request's timeout, producer AND consumer: two of these fit inside
+     * {@link #DELIVERY_TIMEOUT}, and one inside {@link #API_TIMEOUT}.
+     */
     static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(15);
     /** How long send() may block on metadata — the same bound as the delivery timeout. */
     static final Duration MAX_BLOCK = Duration.ofSeconds(30);
+
+    /**
+     * The CONSUMER's blocking clock, set EXPLICITLY for exactly the reason the producer's are:
+     * {@code commitSync()}, the rewind's {@code committed()} lookup and the readiness probe below
+     * all wait up to {@code default.api.timeout.ms} on an unresponsive broker, and Kafka leaves
+     * that at 60s — one such call plus one max backoff already outlasts a 75s tolerance, so an
+     * outage would read as a dead thread even though every producer clock was pinned down. 20s
+     * per API call (over 15s per in-flight request) bounds them well inside the tolerance, and
+     * {@link Main#ALIVE_STALL_FLOOR} is derived from this constant too.
+     */
+    static final Duration API_TIMEOUT = Duration.ofSeconds(20);
+
+    /**
+     * The /health honesty probe's cadence and patience. An EMPTY poll against a DEAD broker
+     * returns normally and {@code commitSync()} with nothing consumed is a no-op, so an idle
+     * instance would keep "completing" passes and /health would stay 200 right through the
+     * outage it promises to report. The consumer therefore asks the broker something that needs
+     * an ANSWER — the metadata of the first topic it subscribes to — on its first iteration and
+     * then at most once per {@code PROBE_EVERY}. The cadence is on the CLOCK, not on a pass
+     * count: under load a pass takes milliseconds, and "every N passes" would fire this round
+     * trip several times a second for nothing.
+     *
+     * <p>No answer within {@code PROBE_TIMEOUT} fails the pass — and ONLY the pass: nothing was
+     * consumed, so nothing is rewound (a rewind would spend a {@link #API_TIMEOUT} lookup on a
+     * batch that does not exist). The readiness marker freezes, /health turns 503, the liveness
+     * beat keeps beating, and the probe is retried every iteration; the retry backoff is what
+     * stretches noticing the broker's RETURN to at most one {@link #MAX_BACKOFF} after it starts
+     * answering again.
+     */
+    static final Duration PROBE_EVERY = Duration.ofSeconds(10);
+    static final Duration PROBE_TIMEOUT = Duration.ofSeconds(5);
 
     private static final Logger LOG = LoggerFactory.getLogger(KafkaLoop.class);
     private static final long INITIAL_BACKOFF_MS = 1_000;
@@ -75,10 +109,13 @@ public class KafkaLoop {
     private final EventsRouter router;
     private final SagaStore store;
     private final Collection<String> topics;
+    /** The topic the readiness probe asks about: any subscribed one proves the same broker. */
+    private final String probeTopic;
     private final Duration sweepEvery;
     private final Duration deliveryTimeout;
     private final Duration requestTimeout;
     private final Duration maxBlock;
+    private final Duration probeTimeout;
 
     private volatile boolean running = true;
     private volatile KafkaConsumer<String, String> consumer;
@@ -99,22 +136,28 @@ public class KafkaLoop {
 
     public KafkaLoop(EventsRouter router, SagaStore store, Collection<String> topics,
                      Duration sweepEvery) {
-        this(router, store, topics, sweepEvery, DELIVERY_TIMEOUT, REQUEST_TIMEOUT, MAX_BLOCK);
+        this(router, store, topics, sweepEvery, DELIVERY_TIMEOUT, REQUEST_TIMEOUT, MAX_BLOCK,
+                PROBE_TIMEOUT);
     }
 
     /**
-     * Test seam: the broker-outage test shrinks the producer's delivery clocks so proving "the
-     * beat outlives the outage" takes seconds, not the production thirty per blocked send.
+     * Test seam: the broker-outage tests shrink the producer's delivery clocks and the readiness
+     * probe's patience so proving "the beat outlives the outage" (and "the silence stalls
+     * readiness") takes seconds, not the production thirty per blocked send.
      */
     KafkaLoop(EventsRouter router, SagaStore store, Collection<String> topics, Duration sweepEvery,
-              Duration deliveryTimeout, Duration requestTimeout, Duration maxBlock) {
+              Duration deliveryTimeout, Duration requestTimeout, Duration maxBlock,
+              Duration probeTimeout) {
         this.router = router;
         this.store = store;
         this.topics = topics;
+        this.probeTopic = topics.stream().findFirst().orElseThrow(() -> new IllegalArgumentException(
+                "a KafkaLoop needs at least one topic to consume (and to probe the broker with)"));
         this.sweepEvery = sweepEvery;
         this.deliveryTimeout = deliveryTimeout;
         this.requestTimeout = requestTimeout;
         this.maxBlock = maxBlock;
+        this.probeTimeout = probeTimeout;
     }
 
     /**
@@ -147,6 +190,12 @@ public class KafkaLoop {
      * READINESS: true while both loops keep COMPLETING passes within their stall tolerances — a
      * loop alive but unable to finish a pass (broker away, database down) reads unhealthy, which
      * is what gates dependants and routing.
+     *
+     * <p>Honest even on a QUIET topic: an empty poll and a {@code commitSync()} with nothing
+     * consumed both succeed against a broker that is gone, so passes alone would keep "completing"
+     * through an outage. The consumer therefore backs its passes with a periodic round trip that
+     * demands an answer (see {@link #PROBE_EVERY}); a broker that stops answering stalls readiness
+     * within one cadence plus one {@link #PROBE_TIMEOUT}, without touching liveness.
      */
     public boolean healthy(Duration consumerStall, Duration sweeperStall) {
         long now = System.nanoTime();
@@ -160,10 +209,14 @@ public class KafkaLoop {
      * outage mid-backoff keeps /alive at 200 (restarting the process would not fix the broker)
      * and only a thread that genuinely stopped iterating past the tolerance — or died, reported
      * immediately — turns it 503, for an orchestrator's liveness probe to bounce the process.
-     * The tolerance must exceed the longest legitimate gap between iterations: a sweep interval
-     * plus a send/flush blocked for up to {@link #DELIVERY_TIMEOUT}/{@link #MAX_BLOCK} (30s)
-     * plus one {@link #MAX_BACKOFF} (30s). {@link Main#ALIVE_STALL_FLOOR} computes the floor
-     * from these same constants, and Main's default of 120s covers the whole worst-case gap.
+     * The tolerance must exceed the longest legitimate gap between iterations, and that gap is
+     * paid in CONSUMER clocks as much as in producer ones: a sweep interval, a send/flush blocked
+     * for up to {@link #DELIVERY_TIMEOUT}/{@link #MAX_BLOCK} (30s), a {@code commitSync()} or a
+     * rewind's {@code committed()} lookup blocked for up to {@link #API_TIMEOUT} (20s — pinned
+     * down for exactly this reason; Kafka's own default is 60s), the readiness probe's
+     * {@link #PROBE_TIMEOUT} (5s), and then one {@link #MAX_BACKOFF} (30s).
+     * {@link Main#ALIVE_STALL_FLOOR} computes the floor from these same constants (plus a
+     * margin), and Main's default of 120s covers the whole worst-case gap.
      */
     public boolean alive(Duration stallTolerance) {
         if (consumerThread == null || !consumerThread.isAlive()
@@ -181,6 +234,9 @@ public class KafkaLoop {
         // records it lost, so no poll (and above all no commit) may happen before the seek-back
         // lands — otherwise a commit would quietly seal the skipped batch
         boolean rewindNeeded = false;
+        // the first iteration probes at once — a broker that is already gone must not need a
+        // cadence's grace before /health says so. Nanotime DIFFERENCES only, never absolutes
+        long nextProbeNanos = System.nanoTime();
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProps(bootstrapServers))) {
             this.consumer = consumer;
             consumer.subscribe(topics);
@@ -192,6 +248,14 @@ public class KafkaLoop {
                     if (rewindNeeded) {
                         rewindToCommitted(consumer);   // throws if it cannot; the flag survives
                         rewindNeeded = false;
+                    }
+                    if (System.nanoTime() - nextProbeNanos >= 0) {
+                        // the honesty probe (see PROBE_EVERY): an empty poll and a commit with
+                        // nothing consumed both succeed against dead air, so a quiet instance
+                        // would keep stamping passes through an outage. The next probe is
+                        // scheduled only on SUCCESS — a failing one is retried every iteration
+                        probeBroker(consumer);
+                        nextProbeNanos = System.nanoTime() + PROBE_EVERY.toNanos();
                     }
                     ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));
                     List<Sent> sent = new ArrayList<>();
@@ -215,6 +279,16 @@ public class KafkaLoop {
                     backoffMs = INITIAL_BACKOFF_MS;
                 } catch (WakeupException woken) {
                     // the shutdown hook waking a blocked poll; the while condition decides
+                } catch (BrokerSilent silent) {
+                    // the probe found nobody home. Unlike every other failure NOTHING was
+                    // consumed here, so there is nothing to rewind — raising the flag would make
+                    // the NEXT iteration spend a committed() lookup (up to one
+                    // default.api.timeout.ms) on a batch that does not exist, stretching the gap
+                    // between two liveness beats for no gain at all. Freeze readiness, back off,
+                    // ask again: /health goes 503, /alive stays 200, which is the honest pair
+                    LOG.error("offboarding consumer got no answer from the broker; readiness"
+                            + " stalls until it does", silent.getCause());
+                    backoffMs = pause(backoffMs);
                 } catch (Exception infrastructure) {
                     LOG.error("offboarding consumer pass failed; will rewind to the committed"
                             + " offsets and retry", infrastructure);
@@ -319,6 +393,31 @@ public class KafkaLoop {
         }
     }
 
+    /**
+     * The honesty probe itself: ONE metadata round trip, for a topic this loop already consumes —
+     * {@code listTopics} would ask for every topic in the cluster, a needlessly fat answer for a
+     * question this narrow. Any failure becomes {@link BrokerSilent} so the pass can tell "the
+     * broker did not answer" (nothing consumed, nothing to rewind) from "handling failed" (a
+     * batch is in flight and must be redelivered); a shutdown's wakeup rides through untouched,
+     * or the stop would be swallowed as a broker problem.
+     */
+    private void probeBroker(KafkaConsumer<String, String> consumer) {
+        try {
+            consumer.partitionsFor(probeTopic, probeTimeout);
+        } catch (WakeupException stopping) {
+            throw stopping;
+        } catch (Exception unanswered) {
+            throw new BrokerSilent(probeTimeout, unanswered);
+        }
+    }
+
+    /** The broker did not answer the readiness probe — a failure with NO consumed batch behind it. */
+    private static final class BrokerSilent extends RuntimeException {
+        BrokerSilent(Duration within, Throwable cause) {
+            super("the broker did not answer the readiness probe within " + within, cause);
+        }
+    }
+
     /** Back off before the retry: one second doubling to thirty, reset by any successful pass. */
     private static long pause(long backoffMs) {
         try {
@@ -384,7 +483,8 @@ public class KafkaLoop {
         return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);
     }
 
-    private static Properties consumerProps(String bootstrap) {
+    /** Package-private so the test can pin the clocks /alive's floor is derived from. */
+    static Properties consumerProps(String bootstrap) {
         Properties props = new Properties();
         props.put("bootstrap.servers", bootstrap);
         props.put("group.id", "offboarding");
@@ -392,6 +492,13 @@ public class KafkaLoop {
         props.put("auto.offset.reset", "earliest");
         props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
         props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        // the CONSUMER's clocks, EXPLICIT because /alive depends on them just as much as on the
+        // producer's (see API_TIMEOUT): commitSync(), the rewind's committed() lookup and the
+        // readiness probe each block up to default.api.timeout.ms, and Kafka's 60s default would
+        // let a single one of them plus one backoff outlast the whole stall tolerance — the floor
+        // Main derives is computed from this very constant
+        props.put("default.api.timeout.ms", String.valueOf(API_TIMEOUT.toMillis()));
+        props.put("request.timeout.ms", String.valueOf(REQUEST_TIMEOUT.toMillis()));
         return props;
     }
 
