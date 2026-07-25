@@ -96,8 +96,8 @@ public class InMemorySagaStore implements SagaStore {
         for (Saga saga : sagas.values()) {
             if ("STARTED".equals(saga.state) && saga.createdAt.isBefore(cutoff)) {
                 if (saga.retries < maxRetries) {
-                    saga.retries++;
-                    saga.updatedAt = at;
+                    // a candidate, not a charge: retryDelivered() moves the counter once the
+                    // re-command reached the broker — mirrors the JDBC adapter
                     retries.add(new Retry(saga.id, saga.email));
                 } else {
                     saga.state = "COMPENSATED";
@@ -107,6 +107,14 @@ public class InMemorySagaStore implements SagaStore {
             }
         }
         return new SweepResult(retries, compensated);
+    }
+
+    @Override
+    public void retryDelivered(UUID sagaId) {
+        Saga saga = sagas.get(sagaId);
+        if (saga != null && "STARTED".equals(saga.state)) {
+            saga.retries++;
+        }
     }
 
     @Override

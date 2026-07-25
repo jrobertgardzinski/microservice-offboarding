@@ -161,17 +161,12 @@ public class JdbcSagaStore implements SagaStore {
             }
             for (Overdue saga : overdue) {
                 if (saga.retriesSoFar() < maxRetries) {
-                    // participants are idempotent, so re-commanding costs nothing — count the
-                    // attempt and let the caller resend PURGE_USER_CONTENT
-                    try (PreparedStatement update = connection.prepareStatement(
-                            "UPDATE offboarding_sagas SET retries = retries + 1, updated_at = ? "
-                                    + "WHERE id = ? AND state = 'STARTED'")) {
-                        update.setTimestamp(1, Timestamp.from(at));
-                        update.setObject(2, saga.id());
-                        if (update.executeUpdate() == 1) {
-                            retries.add(new Retry(saga.id(), saga.email()));
-                        }
-                    }
+                    // participants are idempotent, so re-commanding costs nothing — hand the
+                    // candidate back WITHOUT counting: the attempt is charged by retryDelivered()
+                    // only after the resent PURGE_USER_CONTENT demonstrably reached the broker.
+                    // Counting here would let a dead broker burn all retries without a single
+                    // command on the wire, and the saga would compensate having never re-asked
+                    retries.add(new Retry(saga.id(), saga.email()));
                 } else {
                     // retries exhausted — give up, freeing the email for a future saga, and tell
                     // the caller who DID confirm so the failure can name the partial purge
@@ -190,6 +185,21 @@ public class JdbcSagaStore implements SagaStore {
             return new SweepResult(retries, compensated);
         } catch (SQLException e) {
             throw new IllegalStateException("could not compensate overdue sagas", e);
+        }
+    }
+
+    @Override
+    public void retryDelivered(UUID sagaId) {
+        // the delivered-first discipline (see SagaStore): only a re-command the broker ACCEPTED
+        // moves the counter, so the state guard keeps a late delivery off a finished saga
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement update = connection.prepareStatement(
+                     "UPDATE offboarding_sagas SET retries = retries + 1 "
+                             + "WHERE id = ? AND state = 'STARTED'")) {
+            update.setObject(1, sagaId);
+            update.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("could not count the delivered retry", e);
         }
     }
 

@@ -64,10 +64,20 @@ public interface SagaStore {
     boolean complete(String email, Instant at);
 
     /**
-     * STARTED older than the cutoff: re-command while retries remain (incrementing the counter),
-     * COMPENSATED only once they are exhausted. Sweeping twice moves nothing twice.
+     * STARTED older than the cutoff: re-command while retries remain, COMPENSATED only once they
+     * are exhausted. Returning a {@link Retry} does NOT touch the counter — an attempt counts only
+     * once the re-commanded purge demonstrably reached the broker, which the caller reports via
+     * {@link #retryDelivered} (the same delivered-first discipline as the outcome outbox). A dead
+     * broker can therefore never burn the retries: every sweep hands back the same candidates
+     * until one of the re-commands actually lands. Sweeping twice moves nothing twice.
      */
     SweepResult sweepOverdue(Instant cutoff, int maxRetries, Instant at);
+
+    /**
+     * The retry counter's second half: the re-commanded purge reached the broker, so the attempt
+     * counts against maxRetries now — and only now. A no-op unless the saga is still STARTED.
+     */
+    void retryDelivered(UUID sagaId);
 
     /** The outbox's second half: the saga's outcome reached the broker, remember that. */
     void markAnnounced(UUID sagaId);

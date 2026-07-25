@@ -241,11 +241,12 @@ class KafkaLoopIntegrationTest {
         String facts = "security-events-" + run;
         String memesTopic = "memes-events-" + run;
         createTopics(facts, memesTopic, EventsRouter.COMMANDS_TOPIC, EventsRouter.OUTCOMES_TOPIC);
-        // choke the outcomes topic: max.message.bytes so small NOTHING fits, so every send
-        // fails deterministically with RecordTooLargeException — the failure flush() never
-        // reports and only the checked send futures can see
-        outcomesTopicMaxMessageBytes("1");
         try {
+            // choke the outcomes topic: max.message.bytes so small NOTHING fits, so every send
+            // fails deterministically with RecordTooLargeException — the failure flush() never
+            // reports and only the checked send futures can see. INSIDE the try: if the alter's
+            // get() fails after the server applied it, the finally still repairs the shared topic
+            outcomesTopicMaxMessageBytes("1");
             startLoop(store, facts, Map.of(memesTopic, "memes"), Duration.ofMillis(300),
                     new SweepOverdue(store, Duration.ofMinutes(5), 3, Duration.ofSeconds(1),
                             SweepOverdue.DEFAULT_RETENTION));
@@ -280,10 +281,56 @@ class KafkaLoopIntegrationTest {
                 () -> announced(email));
     }
 
+    // ------------------- (b3) a dead broker burns no retries: the counter moves on DELIVERY only
+
+    @Test
+    void an_undeliverable_recommand_burns_no_retries_and_the_saga_never_compensates_prematurely()
+            throws Exception {
+        String run = run();
+        String email = "deadair-" + run + "@example.com";
+        String facts = "security-events-" + run;
+        String memesTopic = "memes-events-" + run;
+        createTopics(facts, memesTopic, EventsRouter.COMMANDS_TOPIC, EventsRouter.OUTCOMES_TOPIC);
+        // a saga already long overdue when the loop wakes up — the sweeper's case from sweep one
+        store.start(UUID.randomUUID(), email, Instant.now().minusSeconds(600));
+        try {
+            // the commands topic rejects EVERY send (RecordTooLarge — the same deterministic
+            // stand-in for a dead broker as the outcomes-outbox test): sweeps keep offering the
+            // retry but none is ever delivered. Under the old count-on-sweep semantics,
+            // maxRetries=1 would compensate on the second sweep without ONE re-command on the
+            // wire; the delivered-first counter must not move at all
+            topicMaxMessageBytes(EventsRouter.COMMANDS_TOPIC, "1");
+            startLoop(store, facts, Map.of(memesTopic, "memes"), Duration.ofMillis(300),
+                    new SweepOverdue(store, Duration.ofMinutes(5), 1, Duration.ofSeconds(1),
+                            SweepOverdue.DEFAULT_RETENTION));
+
+            Thread.sleep(4_500);   // several sweeps, every re-command bouncing off the broker
+            assertEquals(0, retriesInDb(email), "an undelivered re-command must not burn a retry");
+            assertEquals("STARTED", sagaState(email), "the saga must keep waiting for its retry — "
+                    + "compensating with no re-command on the wire is the regression this pins");
+        } finally {
+            topicMaxMessageBytes(EventsRouter.COMMANDS_TOPIC, null);   // repair — and cleanup
+        }
+
+        // with the broker repaired the retry is DELIVERED, and only then counted; the silence
+        // persists, so the honestly-spent counter lets a following sweep capitulate for real
+        // (the long leashes cover the sweeper's grown backoff)
+        readMatching(EventsRouter.COMMANDS_TOPIC, Set.of(email), 1, Duration.ofSeconds(45),
+                Duration.ZERO);
+        awaitTrue("the delivered retry is counted", Duration.ofSeconds(45),
+                () -> retriesInDb(email) >= 1);
+        awaitTrue("with the retries spent and the silence persisting, the saga compensates",
+                Duration.ofSeconds(45), () -> "COMPENSATED".equals(sagaState(email)));
+    }
+
     /** SET a max.message.bytes override on the shared outcomes topic, or DELETE it (null). */
     private static void outcomesTopicMaxMessageBytes(String value) throws Exception {
-        ConfigResource topic =
-                new ConfigResource(ConfigResource.Type.TOPIC, EventsRouter.OUTCOMES_TOPIC);
+        topicMaxMessageBytes(EventsRouter.OUTCOMES_TOPIC, value);
+    }
+
+    /** SET a max.message.bytes override on a shared topic, or DELETE it (null). */
+    private static void topicMaxMessageBytes(String topicName, String value) throws Exception {
+        ConfigResource topic = new ConfigResource(ConfigResource.Type.TOPIC, topicName);
         AlterConfigOp op = value == null
                 ? new AlterConfigOp(new ConfigEntry("max.message.bytes", ""), AlterConfigOp.OpType.DELETE)
                 : new AlterConfigOp(new ConfigEntry("max.message.bytes", value), AlterConfigOp.OpType.SET);
@@ -327,6 +374,12 @@ class KafkaLoopIntegrationTest {
         createTopics(facts, memesTopic);
         KafkaLoop loop = startLoop(store, facts, Map.of(memesTopic, "memes"),
                 Duration.ofMillis(200), new SweepOverdue(store, Duration.ofMinutes(5)));
+
+        // one start per instance: a second start() would overwrite the producer and thread
+        // fields under the running loops — the guard must refuse it outright
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> loop.start(KAFKA.getBootstrapServers()),
+                "a second start() on the same instance must throw");
 
         // both loops must be genuinely PASSING, not just freshly initialised: after 3s of
         // life, the pass stamps have to be at most one poll/sweep old
@@ -485,6 +538,10 @@ class KafkaLoopIntegrationTest {
         return querySaga(email, "outcome_announced").map(Boolean::parseBoolean).orElse(false);
     }
 
+    private int retriesInDb(String email) {
+        return querySaga(email, "retries").map(Integer::parseInt).orElse(-1);
+    }
+
     private int sagaCount(String email) {
         try (Connection connection = dataSource.getConnection();
              PreparedStatement statement = connection.prepareStatement(
@@ -553,6 +610,11 @@ class KafkaLoopIntegrationTest {
         @Override
         public SweepResult sweepOverdue(Instant cutoff, int maxRetries, Instant at) {
             return inner.sweepOverdue(cutoff, maxRetries, at);
+        }
+
+        @Override
+        public void retryDelivered(UUID sagaId) {
+            inner.retryDelivered(sagaId);
         }
 
         @Override

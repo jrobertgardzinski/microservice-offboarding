@@ -64,13 +64,27 @@ class EventsRouterPoisonPillTest {
     }
 
     @Test
-    void a_confirmation_with_a_mangled_sagaId_still_lands_via_the_email_fallback() {
+    void a_confirmation_with_a_mangled_sagaId_drops_and_confirms_nothing() {
+        // a PRESENT-but-unparseable sagaId is a poison pill, not an invitation to guess: falling
+        // back to the email lookup would let a mangled echo of a CLOSED case land on a newer saga
+        // for the same account — the very hole the precise address exists to close
         RouterFixture fixture = router().withRunningSagaFor("leaver@example.com");
-        fixture.router.handle("memes-events",
+        List<EventsRouter.Outgoing> out = fixture.router.handle("memes-events",
                 "{\"type\":\"USER_CONTENT_PURGED\",\"sagaId\":\"garbage\","
                         + "\"email\":\"leaver@example.com\",\"version\":1}");
-        assertTrue(fixture.store.all().get(0).confirmed.contains("memes"),
-                "a bad address degrades to the old email lookup, never to a drop of a good record");
+        assertEquals(List.of(), out);
+        assertTrue(fixture.store.all().get(0).confirmed.isEmpty(),
+                "a mangled address must not confirm ANY saga, not even the email's running one");
+    }
+
+    @Test
+    void a_confirmation_without_the_sagaId_field_lands_via_the_email_fallback() {
+        // the fallback exists solely for old producers that never learned the field — ABSENT is
+        // the only spelling that may degrade to the email lookup
+        RouterFixture fixture = router().withRunningSagaFor("leaver@example.com");
+        fixture.router.handle("memes-events",
+                "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"leaver@example.com\",\"version\":1}");
+        assertTrue(fixture.store.all().get(0).confirmed.contains("memes"));
     }
 
     @Test

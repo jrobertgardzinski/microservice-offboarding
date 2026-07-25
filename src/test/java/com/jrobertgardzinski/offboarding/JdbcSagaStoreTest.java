@@ -196,12 +196,49 @@ class JdbcSagaStoreTest {
             assertEquals(List.of(new SagaStore.Retry(saga, "alice@example.com")), swept.retries(),
                     "attempt " + attempt + " re-commands instead of giving up");
             assertEquals(List.of(), swept.compensated());
+            store.retryDelivered(saga);   // the loop's word that the re-command reached the broker
         }
         SagaStore.SweepResult last = store.sweepOverdue(T0.plusSeconds(120), 3, T0.plusSeconds(200));
         assertEquals(List.of(), last.retries(), "the retries are spent");
         assertEquals(List.of(new SagaStore.Compensated(saga, "alice@example.com", Set.of("memes"))),
                 last.compensated(),
                 "capitulation names the participants that DID purge — the partial-purge disclosure");
+    }
+
+    @Test
+    void an_undelivered_retry_burns_nothing_and_never_capitulates() {
+        // the broker is down: every sweep offers the candidate, no retryDelivered() ever comes —
+        // the counter must stay untouched and the saga must NOT compensate, or three sweeps
+        // against a dead broker would announce a failure without one re-command on the wire
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        for (int sweep = 1; sweep <= 5; sweep++) {
+            SagaStore.SweepResult swept =
+                    store.sweepOverdue(T0.plusSeconds(120), 3, T0.plusSeconds(120L + sweep));
+            assertEquals(List.of(new SagaStore.Retry(saga, "alice@example.com")), swept.retries(),
+                    "sweep " + sweep + " still offers the SAME candidate — nothing was delivered");
+            assertEquals(List.of(), swept.compensated(),
+                    "no compensation may happen while no retry was ever delivered");
+        }
+    }
+
+    @Test
+    void a_delivered_retry_is_not_counted_against_a_finished_saga() throws Exception {
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        store.complete("alice@example.com", T0);
+        store.retryDelivered(saga);   // a late delivery report after completion must be a no-op
+        assertEquals(0, retriesInDb(saga), "a finished saga's counter must stay untouched");
+    }
+
+    private int retriesInDb(UUID saga) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT retries FROM offboarding_sagas WHERE id = ?")) {
+            select.setObject(1, saga);
+            try (var rows = select.executeQuery()) {
+                rows.next();
+                return rows.getInt(1);
+            }
+        }
     }
 
     @Test

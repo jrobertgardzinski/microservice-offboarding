@@ -63,10 +63,14 @@ class SecurityOutcomePactProviderTest {
         fixture.store.start(UUID.randomUUID(), "leaver@example.com",
                 java.time.Instant.parse("2026-07-11T11:00:00Z"));
         // the sweeper re-commands the purge until the retries are spent; only then does the real
-        // failure announcement fall out
+        // failure announcement fall out. A retry burns only when its re-command was DELIVERED —
+        // report each one delivered, as KafkaLoop.settleDeliveries would after a proven send
         for (int retry = 0; retry < com.jrobertgardzinski.offboarding.application.SweepOverdue
                 .DEFAULT_MAX_RETRIES; retry++) {
-            fixture.router.sweepOverdue();
+            fixture.router.sweepOverdue().stream()
+                    .map(EventsRouter.Outgoing::countsRetryFor)
+                    .filter(java.util.Objects::nonNull)
+                    .forEach(fixture.store::retryDelivered);
         }
         return fixture.router.sweepOverdue().stream()
                 .filter(outgoing -> EventsRouter.OUTCOMES_TOPIC.equals(outgoing.topic()))

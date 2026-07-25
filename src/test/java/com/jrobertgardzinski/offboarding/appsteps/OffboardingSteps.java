@@ -202,7 +202,7 @@ public class OffboardingSteps {
     @When("the purge deadline passes")
     public void deadlinePasses() {
         now = now.plus(TIMEOUT).plusSeconds(1);
-        announced.addAll(router.sweepOverdue());
+        announced.addAll(sweepWithDeliveredRetries());
     }
 
     @Given("the purge deadline passed and every retry was exhausted")
@@ -211,7 +211,7 @@ public class OffboardingSteps {
         now = now.plus(TIMEOUT).plusSeconds(1);
         // one sweep per retry, plus the sweep that finally capitulates
         for (int sweep = 0; sweep <= SweepOverdue.DEFAULT_MAX_RETRIES; sweep++) {
-            announced.addAll(router.sweepOverdue());
+            announced.addAll(sweepWithDeliveredRetries());
         }
     }
 
@@ -219,13 +219,28 @@ public class OffboardingSteps {
     public void nextSweepComesAround() {
         // late enough that a still-owed outcome is no longer "merely in flight"
         now = now.plus(SweepOverdue.DEFAULT_REPUBLISH_AFTER).plusSeconds(1);
-        announced.addAll(router.sweepOverdue());
+        announced.addAll(sweepWithDeliveredRetries());
     }
 
     @When("the retention period passes")
     public void retentionPeriodPasses() {
         now = now.plus(SweepOverdue.DEFAULT_RETENTION).plusSeconds(1);
-        announced.addAll(router.sweepOverdue());
+        announced.addAll(sweepWithDeliveredRetries());
+    }
+
+    /**
+     * These scenarios assume the transport DELIVERS what the router answers — so, exactly like
+     * {@code KafkaLoop.settleDeliveries} after a proven send, a re-commanded purge reports back
+     * and burns one retry. (A broker outage, where nothing is delivered and nothing burns, is
+     * the integration test's story, not the choreography's.)
+     */
+    private List<EventsRouter.Outgoing> sweepWithDeliveredRetries() {
+        List<EventsRouter.Outgoing> swept = router.sweepOverdue();
+        swept.stream()
+                .map(EventsRouter.Outgoing::countsRetryFor)
+                .filter(java.util.Objects::nonNull)
+                .forEach(store::retryDelivered);
+        return swept;
     }
 
     @Then("a purge command for {word} goes out to the content services")

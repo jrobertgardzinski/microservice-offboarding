@@ -64,7 +64,7 @@ public class KafkaLoop {
     private volatile long lastSweeperPassMillis;
     private Thread consumerThread;
     private Thread sweeperThread;
-    private final AtomicBoolean shutdownHookRegistered = new AtomicBoolean();
+    private final AtomicBoolean started = new AtomicBoolean();
 
     public KafkaLoop(EventsRouter router, SagaStore store, Collection<String> topics,
                      Duration sweepEvery) {
@@ -74,8 +74,17 @@ public class KafkaLoop {
         this.sweepEvery = sweepEvery;
     }
 
-    /** Starts the consuming loop and the timeout sweeper, each on its own daemon virtual thread. */
+    /**
+     * Starts the consuming loop and the timeout sweeper, each on its own daemon virtual thread.
+     * One start per instance: a second call throws — it would overwrite the producer and thread
+     * fields while the first loops still run, leaking the old producer and orphaning threads that
+     * shutdown() could no longer reach.
+     */
     public void start(String bootstrapServers) {
+        if (!started.compareAndSet(false, true)) {
+            throw new IllegalStateException("this KafkaLoop is already started; "
+                    + "create a new instance instead of starting one twice");
+        }
         // count liveness from here, so a service still warming up is not born unhealthy
         lastConsumerPassMillis = System.currentTimeMillis();
         lastSweeperPassMillis = System.currentTimeMillis();
@@ -83,11 +92,9 @@ public class KafkaLoop {
         consumerThread = Thread.ofVirtual().name("offboarding-consumer")
                 .start(() -> consume(bootstrapServers));
         sweeperThread = Thread.ofVirtual().name("offboarding-sweeper").start(this::sweep);
-        // one hook per INSTANCE, however often start() is called — a hook per start would run
-        // shutdown() several times over and leak threads waiting on the same loop
-        if (shutdownHookRegistered.compareAndSet(false, true)) {
-            Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown, "offboarding-loop-shutdown"));
-        }
+        // the started CAS above also makes this exactly one hook per instance — several would
+        // run shutdown() over each other and leak threads waiting on the same loop
+        Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown, "offboarding-loop-shutdown"));
     }
 
     /** True while both loops keep completing passes within their stall tolerances. */
@@ -180,8 +187,10 @@ public class KafkaLoop {
      * The outbox's second half, made honest: flush() pushes the batch out but reports no delivery
      * errors, so every send's future is checked here — after the flush they are already settled,
      * the get() does not really block. Only an outcome the broker demonstrably ACCEPTED earns its
-     * announced mark; ANY failure then fails the pass (no commit, the retry path re-delivers),
-     * while the outcomes that did land keep their marks — re-handling them is idempotent.
+     * announced mark, and only a re-command that demonstrably ARRIVED charges its saga's retry
+     * counter — a broker outage burns no retries, so the sweeper can never capitulate without
+     * having re-asked on the wire. ANY failure then fails the pass (no commit, the retry path
+     * re-delivers), while the sends that did land keep their marks — re-handling is idempotent.
      */
     private void settleDeliveries(List<Sent> sent) throws Exception {
         Exception firstFailure = null;
@@ -192,10 +201,13 @@ public class KafkaLoop {
                 if (firstFailure == null) {
                     firstFailure = undelivered;
                 }
-                continue;   // no announced mark for what never reached the broker
+                continue;   // no announced mark, no counted retry, for what never reached the broker
             }
             if (each.outgoing().announcesSaga() != null) {
                 store.markAnnounced(each.outgoing().announcesSaga());
+            }
+            if (each.outgoing().countsRetryFor() != null) {
+                store.retryDelivered(each.outgoing().countsRetryFor());
             }
         }
         if (firstFailure != null) {
