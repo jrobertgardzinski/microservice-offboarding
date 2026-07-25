@@ -22,6 +22,12 @@ import java.util.UUID;
  * a new participant is a configuration entry, not a migration. Idempotence leans on the primary
  * key (a duplicate confirmation is unique-violation → ignored) and the STARTED→COMPLETED update
  * is the once-latch — exactly one caller sees the saga complete.
+ *
+ * <p>Two more constraints do the same job for starting: {@code fact_id UNIQUE} (V1) catches a
+ * replayed fact that races its twin past the read-before-insert, and {@code running_email UNIQUE}
+ * (V2 — set while STARTED, NULLed by every finishing update) catches two facts racing to open a
+ * second saga for one account. Losing either race is a 23505, and the loser adopts the winner's
+ * saga.
  */
 public class JdbcSagaStore implements SagaStore {
 
@@ -36,26 +42,38 @@ public class JdbcSagaStore implements SagaStore {
     @Override
     public UUID start(UUID factId, String email, Instant at) {
         try (Connection connection = dataSource.getConnection()) {
-            Optional<UUID> byFact = sagaOfFact(connection, factId);
-            if (byFact.isPresent()) {
-                return byFact.get();   // a replayed fact finds its saga, even a finished one
+            // two attempts at most: the read-then-insert can lose a race, but the UNIQUE
+            // constraints turn the loss into a 23505 and the second read finds the winner's saga
+            for (int attempt = 0; ; attempt++) {
+                Optional<UUID> byFact = sagaOfFact(connection, factId);
+                if (byFact.isPresent()) {
+                    return byFact.get();   // a replayed fact finds its saga, even a finished one
+                }
+                Optional<UUID> running = runningSaga(connection, email);
+                if (running.isPresent()) {
+                    return running.get();   // a second request joins the saga already underway
+                }
+                UUID id = UUID.randomUUID();
+                try (PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO offboarding_sagas "
+                                + "(id, fact_id, email, running_email, state, created_at, updated_at) "
+                                + "VALUES (?, ?, ?, ?, 'STARTED', ?, ?)")) {
+                    insert.setObject(1, id);
+                    insert.setObject(2, factId);
+                    insert.setString(3, email);
+                    insert.setString(4, email);   // the one-running-saga-per-email latch (V2)
+                    insert.setTimestamp(5, Timestamp.from(at));
+                    insert.setTimestamp(6, Timestamp.from(at));
+                    insert.executeUpdate();
+                    return id;
+                } catch (SQLException raced) {
+                    if (!UNIQUE_VIOLATION.equals(raced.getSQLState()) || attempt > 0) {
+                        throw raced;
+                    }
+                    // fact_id or running_email collided: someone inserted between our read and
+                    // our insert — loop once more and adopt their saga instead of failing
+                }
             }
-            Optional<UUID> running = runningSaga(connection, email);
-            if (running.isPresent()) {
-                return running.get();
-            }
-            UUID id = UUID.randomUUID();
-            try (PreparedStatement insert = connection.prepareStatement(
-                    "INSERT INTO offboarding_sagas (id, fact_id, email, state, created_at, updated_at) "
-                            + "VALUES (?, ?, ?, 'STARTED', ?, ?)")) {
-                insert.setObject(1, id);
-                insert.setObject(2, factId);
-                insert.setString(3, email);
-                insert.setTimestamp(4, Timestamp.from(at));
-                insert.setTimestamp(5, Timestamp.from(at));
-                insert.executeUpdate();
-            }
-            return id;
         } catch (SQLException e) {
             throw new IllegalStateException("could not start offboarding saga", e);
         }
@@ -72,17 +90,29 @@ public class JdbcSagaStore implements SagaStore {
     }
 
     @Override
-    public boolean confirm(String email, String participant, Set<String> required, Instant at) {
+    public Optional<UUID> confirm(String email, UUID sagaId, String participant, Set<String> required,
+                                  Instant at) {
         try (Connection connection = dataSource.getConnection()) {
-            Optional<UUID> running = runningSaga(connection, email);
-            if (running.isEmpty()) {
-                return false;   // a stray — no saga is waiting for this
+            // fresh confirmations echo the saga id the command carried — the precise address,
+            // and the FINAL word: a sagaId whose saga is no longer STARTED is a stray from a
+            // closed case, treated like a confirmation for an unknown saga. It must NOT fall
+            // back to the email lookup — that would let an echo of a finished case land on a
+            // NEWER saga for the same account. The email fallback exists solely for
+            // confirmations without the sagaId field (old producers).
+            Optional<UUID> target;
+            if (sagaId != null) {
+                target = startedSaga(connection, sagaId);
+            } else {
+                target = runningSaga(connection, email);
             }
-            UUID sagaId = running.get();
+            if (target.isEmpty()) {
+                return Optional.empty();   // a stray — no saga is waiting for this
+            }
+            UUID saga = target.get();
             try (PreparedStatement insert = connection.prepareStatement(
                     "INSERT INTO offboarding_confirmations (saga_id, participant, confirmed_at) "
                             + "VALUES (?, ?, ?)")) {
-                insert.setObject(1, sagaId);
+                insert.setObject(1, saga);
                 insert.setString(2, participant);
                 insert.setTimestamp(3, Timestamp.from(at));
                 insert.executeUpdate();
@@ -91,10 +121,10 @@ public class JdbcSagaStore implements SagaStore {
                     throw duplicate;
                 }
             }
-            if (!confirmedParticipants(connection, sagaId).containsAll(required)) {
-                return false;
+            if (!confirmedParticipants(connection, saga).containsAll(required)) {
+                return Optional.empty();
             }
-            return completeStarted(connection, sagaId, at);
+            return completeStarted(connection, saga, at) ? Optional.of(saga) : Optional.empty();
         } catch (SQLException e) {
             throw new IllegalStateException("could not record purge confirmation", e);
         }
@@ -111,43 +141,140 @@ public class JdbcSagaStore implements SagaStore {
     }
 
     @Override
-    public List<String> compensateOverdue(Instant cutoff, Instant at) {
-        List<String> emails = new ArrayList<>();
+    public SweepResult sweepOverdue(Instant cutoff, int maxRetries, Instant at) {
+        List<Retry> retries = new ArrayList<>();
+        List<Compensated> compensated = new ArrayList<>();
         try (Connection connection = dataSource.getConnection()) {
-            List<UUID> overdue = new ArrayList<>();
-            List<String> overdueEmails = new ArrayList<>();
+            record Overdue(UUID id, String email, int retriesSoFar) {
+            }
+            List<Overdue> overdue = new ArrayList<>();
             try (PreparedStatement select = connection.prepareStatement(
-                    "SELECT id, email FROM offboarding_sagas WHERE state = 'STARTED' AND created_at < ?")) {
+                    "SELECT id, email, retries FROM offboarding_sagas "
+                            + "WHERE state = 'STARTED' AND created_at < ?")) {
                 select.setTimestamp(1, Timestamp.from(cutoff));
                 try (ResultSet rows = select.executeQuery()) {
                     while (rows.next()) {
-                        overdue.add(rows.getObject(1, UUID.class));
-                        overdueEmails.add(rows.getString(2));
+                        overdue.add(new Overdue(rows.getObject(1, UUID.class),
+                                rows.getString(2), rows.getInt(3)));
                     }
                 }
             }
-            for (int i = 0; i < overdue.size(); i++) {
-                try (PreparedStatement update = connection.prepareStatement(
-                        "UPDATE offboarding_sagas SET state = 'COMPENSATED', updated_at = ? "
-                                + "WHERE id = ? AND state = 'STARTED'")) {
-                    update.setTimestamp(1, Timestamp.from(at));
-                    update.setObject(2, overdue.get(i));
-                    if (update.executeUpdate() == 1) {
-                        emails.add(overdueEmails.get(i));
+            for (Overdue saga : overdue) {
+                if (saga.retriesSoFar() < maxRetries) {
+                    // participants are idempotent, so re-commanding costs nothing — count the
+                    // attempt and let the caller resend PURGE_USER_CONTENT
+                    try (PreparedStatement update = connection.prepareStatement(
+                            "UPDATE offboarding_sagas SET retries = retries + 1, updated_at = ? "
+                                    + "WHERE id = ? AND state = 'STARTED'")) {
+                        update.setTimestamp(1, Timestamp.from(at));
+                        update.setObject(2, saga.id());
+                        if (update.executeUpdate() == 1) {
+                            retries.add(new Retry(saga.id(), saga.email()));
+                        }
+                    }
+                } else {
+                    // retries exhausted — give up, freeing the email for a future saga, and tell
+                    // the caller who DID confirm so the failure can name the partial purge
+                    try (PreparedStatement update = connection.prepareStatement(
+                            "UPDATE offboarding_sagas SET state = 'COMPENSATED', running_email = NULL, "
+                                    + "updated_at = ? WHERE id = ? AND state = 'STARTED'")) {
+                        update.setTimestamp(1, Timestamp.from(at));
+                        update.setObject(2, saga.id());
+                        if (update.executeUpdate() == 1) {
+                            compensated.add(new Compensated(saga.id(), saga.email(),
+                                    confirmedParticipants(connection, saga.id())));
+                        }
                     }
                 }
             }
-            return emails;
+            return new SweepResult(retries, compensated);
         } catch (SQLException e) {
             throw new IllegalStateException("could not compensate overdue sagas", e);
         }
     }
 
+    @Override
+    public void markAnnounced(UUID sagaId) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement update = connection.prepareStatement(
+                     "UPDATE offboarding_sagas SET outcome_announced = TRUE WHERE id = ?")) {
+            update.setObject(1, sagaId);
+            update.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("could not mark the outcome announced", e);
+        }
+    }
+
+    @Override
+    public List<PendingOutcome> unannouncedOutcomes(Instant olderThan) {
+        List<PendingOutcome> pending = new ArrayList<>();
+        try (Connection connection = dataSource.getConnection()) {
+            try (PreparedStatement select = connection.prepareStatement(
+                    "SELECT id, email, state FROM offboarding_sagas "
+                            + "WHERE state IN ('COMPLETED', 'COMPENSATED') "
+                            + "AND outcome_announced = FALSE AND updated_at < ?")) {
+                select.setTimestamp(1, Timestamp.from(olderThan));
+                try (ResultSet rows = select.executeQuery()) {
+                    while (rows.next()) {
+                        pending.add(new PendingOutcome(rows.getObject(1, UUID.class),
+                                rows.getString(2), rows.getString(3), Set.of()));
+                    }
+                }
+            }
+            // a failed outcome names the participants that DID purge; fetch them second so the
+            // main query stays a single index-friendly scan
+            List<PendingOutcome> withConfirmations = new ArrayList<>(pending.size());
+            for (PendingOutcome outcome : pending) {
+                withConfirmations.add("COMPENSATED".equals(outcome.state())
+                        ? new PendingOutcome(outcome.sagaId(), outcome.email(), outcome.state(),
+                        confirmedParticipants(connection, outcome.sagaId()))
+                        : outcome);
+            }
+            return withConfirmations;
+        } catch (SQLException e) {
+            throw new IllegalStateException("could not read the unannounced outcomes", e);
+        }
+    }
+
+    @Override
+    public int deleteFinishedBefore(Instant olderThan) {
+        // two autocommit statements, children first: if the second fails the sagas simply survive
+        // one more pass and the next sweep finishes the job
+        try (Connection connection = dataSource.getConnection()) {
+            try (PreparedStatement confirmations = connection.prepareStatement(
+                    "DELETE FROM offboarding_confirmations WHERE saga_id IN "
+                            + "(SELECT id FROM offboarding_sagas WHERE state IN ('COMPLETED', 'COMPENSATED') "
+                            + "AND outcome_announced = TRUE AND updated_at < ?)")) {
+                confirmations.setTimestamp(1, Timestamp.from(olderThan));
+                confirmations.executeUpdate();
+            }
+            try (PreparedStatement sagas = connection.prepareStatement(
+                    "DELETE FROM offboarding_sagas WHERE state IN ('COMPLETED', 'COMPENSATED') "
+                            + "AND outcome_announced = TRUE AND updated_at < ?")) {
+                sagas.setTimestamp(1, Timestamp.from(olderThan));
+                return sagas.executeUpdate();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("could not apply the retention window", e);
+        }
+    }
+
     private static Optional<UUID> runningSaga(Connection connection, String email) throws SQLException {
+        // running_email is the V2 latch column: set while STARTED, NULL after — so this is both
+        // the lookup and the uniqueness the constraint enforces
         try (PreparedStatement select = connection.prepareStatement(
-                "SELECT id FROM offboarding_sagas WHERE email = ? AND state = 'STARTED' "
-                        + "ORDER BY created_at DESC LIMIT 1")) {
+                "SELECT id FROM offboarding_sagas WHERE running_email = ?")) {
             select.setString(1, email);
+            try (ResultSet rows = select.executeQuery()) {
+                return rows.next() ? Optional.of(rows.getObject(1, UUID.class)) : Optional.empty();
+            }
+        }
+    }
+
+    private static Optional<UUID> startedSaga(Connection connection, UUID sagaId) throws SQLException {
+        try (PreparedStatement select = connection.prepareStatement(
+                "SELECT id FROM offboarding_sagas WHERE id = ? AND state = 'STARTED'")) {
+            select.setObject(1, sagaId);
             try (ResultSet rows = select.executeQuery()) {
                 return rows.next() ? Optional.of(rows.getObject(1, UUID.class)) : Optional.empty();
             }
@@ -168,10 +295,14 @@ public class JdbcSagaStore implements SagaStore {
         return confirmed;
     }
 
-    /** The once-latch: only the update that actually flips STARTED reports completion. */
+    /**
+     * The once-latch: only the update that actually flips STARTED reports completion. Clearing
+     * running_email in the same statement releases the per-email latch atomically, and the
+     * outcome_announced flag deliberately stays FALSE — announcing is the outbox's job.
+     */
     private static boolean completeStarted(Connection connection, UUID sagaId, Instant at) throws SQLException {
         try (PreparedStatement update = connection.prepareStatement(
-                "UPDATE offboarding_sagas SET state = 'COMPLETED', updated_at = ? "
+                "UPDATE offboarding_sagas SET state = 'COMPLETED', running_email = NULL, updated_at = ? "
                         + "WHERE id = ? AND state = 'STARTED'")) {
             update.setTimestamp(1, Timestamp.from(at));
             update.setObject(2, sagaId);

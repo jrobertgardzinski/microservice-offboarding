@@ -23,7 +23,11 @@ import java.util.Map;
  * only {@code /health} and {@code /metrics}, the saga itself lives on Kafka.
  *
  * <p>Saga state is Postgres when {@code DB_URL} is set, else in-memory H2. Without
- * {@code KAFKA_BOOTSTRAP_SERVERS} the loop simply never runs (dev, tests).
+ * {@code KAFKA_BOOTSTRAP_SERVERS} the loop simply never runs (dev, tests) — and then /health has
+ * no loops to distrust. With Kafka, /health turns 503 once either loop stops completing passes
+ * for longer than its stall tolerance ({@code OFFBOARDING_CONSUMER_STALL_SEC} /
+ * {@code OFFBOARDING_SWEEPER_STALL_SEC}), which is what lets the compose healthcheck restart a
+ * wedged container instead of admiring it.
  */
 public final class Main {
 
@@ -40,6 +44,17 @@ public final class Main {
                 System.getenv().getOrDefault("OFFBOARDING_PARTICIPANTS", DEFAULT_PARTICIPANTS));
         Duration purgeTimeout = Duration.ofSeconds(Long.parseLong(
                 System.getenv().getOrDefault("OFFBOARDING_PURGE_TIMEOUT_SEC", "120")));
+        int maxPurgeRetries = Integer.parseInt(System.getenv().getOrDefault(
+                "OFFBOARDING_MAX_PURGE_RETRIES", String.valueOf(SweepOverdue.DEFAULT_MAX_RETRIES)));
+        Duration republishAfter = Duration.ofSeconds(Long.parseLong(System.getenv().getOrDefault(
+                "OFFBOARDING_OUTCOME_REPUBLISH_SEC",
+                String.valueOf(SweepOverdue.DEFAULT_REPUBLISH_AFTER.toSeconds()))));
+        Duration retention = Duration.ofDays(Long.parseLong(System.getenv().getOrDefault(
+                "OFFBOARDING_RETENTION_DAYS", String.valueOf(SweepOverdue.DEFAULT_RETENTION.toDays()))));
+        Duration consumerStall = Duration.ofSeconds(Long.parseLong(
+                System.getenv().getOrDefault("OFFBOARDING_CONSUMER_STALL_SEC", "60")));
+        Duration sweeperStall = Duration.ofSeconds(Long.parseLong(
+                System.getenv().getOrDefault("OFFBOARDING_SWEEPER_STALL_SEC", "60")));
 
         DataSource dataSource = Database.migratedDataSource();
         SagaStore store = new JdbcSagaStore(dataSource);
@@ -48,20 +63,31 @@ public final class Main {
         EventsRouter router = new EventsRouter(factsTopic, participantByTopic,
                 new BeginOffboarding(store, participants),
                 new RecordConfirmation(store, participants),
-                new SweepOverdue(store, purgeTimeout),
+                new SweepOverdue(store, purgeTimeout, maxPurgeRetries, republishAfter, retention),
                 new ObjectMapper(), Clock.systemUTC());
 
         String bootstrap = System.getenv().getOrDefault("KAFKA_BOOTSTRAP_SERVERS", "").trim();
+        KafkaLoop kafkaLoop = null;
         if (!bootstrap.isEmpty()) {
             List<String> topics = new ArrayList<>(participantByTopic.keySet());
             topics.add(factsTopic);
-            new KafkaLoop(router, topics, Duration.ofSeconds(15)).start(bootstrap);
+            kafkaLoop = new KafkaLoop(router, store, topics, Duration.ofSeconds(15));
+            kafkaLoop.start(bootstrap);
         }
+        KafkaLoop loop = kafkaLoop;
 
         WebServer server = WebServer.builder()
                 .port(port)
                 .routing(routing -> routing
-                        .get("/health", (req, res) -> res.send("OK"))
+                        .get("/health", (req, res) -> {
+                            // the compose healthcheck watches this: a stalled loop turns the
+                            // container unhealthy so the orchestrator restarts it
+                            if (loop == null || loop.healthy(consumerStall, sweeperStall)) {
+                                res.send("OK");
+                            } else {
+                                res.status(503).send("loop stalled");
+                            }
+                        })
                         .get("/metrics", MetricsEndpoint::handle))
                 .build()
                 .start();

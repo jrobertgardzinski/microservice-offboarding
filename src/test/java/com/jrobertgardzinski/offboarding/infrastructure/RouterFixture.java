@@ -44,4 +44,20 @@ final class RouterFixture {
         store.start(UUID.randomUUID(), email, Instant.parse("2026-07-11T11:59:00Z"));
         return this;
     }
+
+    /**
+     * Seed a running saga under a KNOWN id — for confirmations that echo it. An echoed id that
+     * matches no RUNNING saga is a stray by design, so a pact example's fixed sagaId must be the
+     * id the seeded saga actually has.
+     */
+    RouterFixture withRunningSaga(UUID sagaId, String email) {
+        store.startWithId(sagaId, UUID.randomUUID(), email, Instant.parse("2026-07-11T11:59:00Z"));
+        return this;
+    }
+
+    /** The sagaId a confirmation payload echoes — what {@link #withRunningSaga} should seed. */
+    static UUID sagaIdOf(String confirmationPayload) throws Exception {
+        return UUID.fromString(
+                new ObjectMapper().readTree(confirmationPayload).path("sagaId").asText());
+    }
 }

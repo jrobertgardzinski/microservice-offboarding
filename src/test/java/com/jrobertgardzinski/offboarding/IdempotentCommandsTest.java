@@ -46,17 +46,17 @@ class IdempotentCommandsTest {
         c.put("begin with no participants (instant completion)",
                 store -> new BeginOffboarding(store, Set.of()).execute(CAROL_FACT, "carol@example.com", T0));
         c.put("record a first confirmation",
-                store -> new RecordConfirmation(store, PARTICIPANTS).execute("alice@example.com", "comments", T0));
+                store -> new RecordConfirmation(store, PARTICIPANTS).execute("alice@example.com", null, "comments", T0));
         c.put("record an already-recorded confirmation",
-                store -> new RecordConfirmation(store, PARTICIPANTS).execute("alice@example.com", "memes", T0));
+                store -> new RecordConfirmation(store, PARTICIPANTS).execute("alice@example.com", null, "memes", T0));
         c.put("record the completing confirmation",
                 store -> {
                     RecordConfirmation confirm = new RecordConfirmation(store, PARTICIPANTS);
-                    confirm.execute("alice@example.com", "comments", T0);
-                    confirm.execute("alice@example.com", "collections", T0);
+                    confirm.execute("alice@example.com", null, "comments", T0);
+                    confirm.execute("alice@example.com", null, "collections", T0);
                 });
         c.put("record a stray confirmation (no saga)",
-                store -> new RecordConfirmation(store, PARTICIPANTS).execute("nobody@example.com", "memes", T0));
+                store -> new RecordConfirmation(store, PARTICIPANTS).execute("nobody@example.com", null, "memes", T0));
         c.put("sweep the overdue",
                 store -> new SweepOverdue(store, Duration.ofMinutes(2))
                         .execute(T0.plus(Duration.ofMinutes(10))));
@@ -67,7 +67,7 @@ class IdempotentCommandsTest {
     private static InMemorySagaStore seeded() {
         InMemorySagaStore store = new InMemorySagaStore();
         new BeginOffboarding(store, PARTICIPANTS).execute(ALICE_FACT, "alice@example.com", T0);
-        new RecordConfirmation(store, PARTICIPANTS).execute("alice@example.com", "memes", T0);
+        new RecordConfirmation(store, PARTICIPANTS).execute("alice@example.com", null, "memes", T0);
         return store;
     }
 

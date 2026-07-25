@@ -22,6 +22,8 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -104,22 +106,125 @@ public class OffboardingSteps {
         return java.util.UUID.nameUUIDFromBytes(("fact:" + email).getBytes());
     }
 
+    @When("security announces another deletion request for {word}")
+    public void anotherDeletionRequested(String email) {
+        // a genuinely new fact — a fresh id, not a replay of the first announcement
+        announced.addAll(router.handle(FACTS_TOPIC,
+                "{\"id\":\"" + java.util.UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
+                        + "\"email\":\"" + email + "\",\"version\":1}"));
+    }
+
+    @When("security replays the deletion fact for {word}")
+    public void deletionFactReplayed(String email) {
+        deletionRequested(email);   // byte-for-byte the fact that opened the case
+    }
+
+    @When("security announces a deletion request that names no account")
+    public void deletionRequestNamingNoAccount() {
+        announced.addAll(router.handle(FACTS_TOPIC,
+                "{\"id\":\"" + java.util.UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
+                        + "\"version\":1}"));
+    }
+
+    @When("security announces a deletion request with a garbled identity")
+    public void deletionRequestWithGarbledIdentity() {
+        announced.addAll(router.handle(FACTS_TOPIC,
+                "{\"id\":\"not-a-uuid\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
+                        + "\"email\":\"mallory@example.com\",\"version\":1}"));
+    }
+
     @Given("{word} confirmed its purge for {word}")
     @When("{word} confirms its purge for {word}")
     public void participantConfirms(String participant, String email) {
-        String topic = switch (participant) {
+        announced.addAll(router.handle(topicOf(participant),
+                "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + email + "\",\"version\":1}"));
+    }
+
+    @When("{word} confirms its purge for {word} echoing the purge command")
+    public void participantConfirmsEchoingTheCommand(String participant, String email) {
+        confirmEchoing(participant, email, commandedSagaId());
+    }
+
+    @When("every content service confirms its purge for {word} echoing the purge command the portal gave up on")
+    public void everyParticipantConfirmsTheAbandonedCommand(String email) {
+        // the FIRST command is the one the portal later gave up on — a newer case for the same
+        // account may have commanded again since, and that one was not given up
+        String sagaId = firstCommandedSagaId();
+        for (String participant : List.of("memes", "comments", "collections")) {
+            confirmEchoing(participant, email, sagaId);
+        }
+    }
+
+    private void confirmEchoing(String participant, String email, String sagaId) {
+        announced.addAll(router.handle(topicOf(participant),
+                "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + email + "\","
+                        + "\"sagaId\":\"" + sagaId + "\",\"version\":1}"));
+    }
+
+    private static String topicOf(String participant) {
+        return switch (participant) {
             case "memes" -> "memes-events";
             case "comments" -> "comments-events";
             case "collections" -> "usercollections-events";
             default -> throw new IllegalArgumentException("unknown participant " + participant);
         };
-        announced.addAll(router.handle(topic,
-                "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + email + "\",\"version\":1}"));
+    }
+
+    /** The saga the (latest) purge command carried — what a fresh confirmation would echo. */
+    private String commandedSagaId() {
+        List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC);
+        assertFalse(commands.isEmpty(), "no purge command went out to echo");
+        return commands.get(commands.size() - 1).path("sagaId").asText();
+    }
+
+    /** The saga the FIRST purge command carried — what a late echo of an old case would carry. */
+    private String firstCommandedSagaId() {
+        List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC);
+        assertFalse(commands.isEmpty(), "no purge command went out to echo");
+        return commands.get(0).path("sagaId").asText();
+    }
+
+    @Given("the announcement reached security")
+    public void announcementReachedSecurity() {
+        List<EventsRouter.Outgoing> outcomes = announced.stream()
+                .filter(o -> o.topic().equals(EventsRouter.OUTCOMES_TOPIC)).toList();
+        assertFalse(outcomes.isEmpty(), "there is no announcement to have reached security");
+        outcomes.forEach(outcome -> store.markAnnounced(outcome.announcesSaga()));
+        announced.removeAll(outcomes);   // delivered and consumed; the story moves on
+    }
+
+    @Given("the announcement never left the portal")
+    public void announcementNeverLeftThePortal() {
+        // lost in transit before anyone could note it as announced — the saga keeps owing it
+        announced.removeIf(o -> o.topic().equals(EventsRouter.OUTCOMES_TOPIC));
     }
 
     @When("the purge deadline passes")
     public void deadlinePasses() {
         now = now.plus(TIMEOUT).plusSeconds(1);
+        announced.addAll(router.sweepOverdue());
+    }
+
+    @Given("the purge deadline passed and every retry was exhausted")
+    @When("the purge deadline passes and every retry is exhausted")
+    public void deadlinePassesAndRetriesRunOut() {
+        now = now.plus(TIMEOUT).plusSeconds(1);
+        // one sweep per retry, plus the sweep that finally capitulates
+        for (int sweep = 0; sweep <= SweepOverdue.DEFAULT_MAX_RETRIES; sweep++) {
+            announced.addAll(router.sweepOverdue());
+        }
+    }
+
+    @When("the next sweep comes around")
+    public void nextSweepComesAround() {
+        // late enough that a still-owed outcome is no longer "merely in flight"
+        now = now.plus(SweepOverdue.DEFAULT_REPUBLISH_AFTER).plusSeconds(1);
+        announced.addAll(router.sweepOverdue());
+    }
+
+    @When("the retention period passes")
+    public void retentionPeriodPasses() {
+        now = now.plus(SweepOverdue.DEFAULT_RETENTION).plusSeconds(1);
         announced.addAll(router.sweepOverdue());
     }
 
@@ -152,7 +257,51 @@ public class OffboardingSteps {
         assertEquals(email, outcome.path("email").asText());
     }
 
+    @Then("the purge command for {word} is sent again")
+    public void purgeCommandResent(String email) {
+        List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC);
+        assertEquals(2, commands.size(), "the original command and exactly one re-send");
+        for (JsonNode command : commands) {
+            assertEquals("PURGE_USER_CONTENT", command.path("type").asText());
+            assertEquals(email, command.path("email").asText());
+        }
+        assertEquals(commands.get(0).path("sagaId").asText(), commands.get(1).path("sagaId").asText(),
+                "the re-send commands the SAME saga, not a fork");
+    }
+
+    @Then("a fresh purge command for {word} opens a brand-new case")
+    public void freshPurgeCommandOpensANewCase(String email) {
+        List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC);
+        assertEquals(2, commands.size(), "the command of the finished case and the fresh one");
+        for (JsonNode command : commands) {
+            assertEquals("PURGE_USER_CONTENT", command.path("type").asText());
+            assertEquals(email, command.path("email").asText());
+        }
+        assertNotEquals(commands.get(0).path("sagaId").asText(), commands.get(1).path("sagaId").asText(),
+                "past retention the portal remembers nothing: the replayed fact opens a NEW case");
+    }
+
+    @Then("the portal never announces the content of {word} purged")
+    public void portalPurgedNeverAnnounced(String email) {
+        for (JsonNode outcome : allOn(EventsRouter.OUTCOMES_TOPIC)) {
+            assertFalse("PORTAL_CONTENT_PURGED".equals(outcome.path("type").asText())
+                            && email.equals(outcome.path("email").asText()),
+                    "a late confirmation may not rewrite the announced outcome: " + outcome);
+        }
+    }
+
+    @Then("the failure names {word} among the participants that already purged")
+    public void failureNamesThePartialPurge(String participant) {
+        JsonNode confirmed = onlyOn(EventsRouter.OUTCOMES_TOPIC).path("confirmed");
+        boolean named = false;
+        for (JsonNode name : confirmed) {
+            named |= participant.equals(name.asText());
+        }
+        assertTrue(named, "the failure must disclose the partial purge: " + confirmed);
+    }
+
     @Then("no outcome is announced yet")
+    @Then("no outcome is announced again")
     public void nothingAnnounced() {
         List<EventsRouter.Outgoing> outcomes = announced.stream()
                 .filter(o -> o.topic().equals(EventsRouter.OUTCOMES_TOPIC)).toList();
@@ -160,13 +309,21 @@ public class OffboardingSteps {
     }
 
     private JsonNode onlyOn(String topic) {
-        List<EventsRouter.Outgoing> matching = announced.stream()
-                .filter(o -> o.topic().equals(topic)).toList();
+        List<JsonNode> matching = allOn(topic);
         assertEquals(1, matching.size(), "expected exactly one event on " + topic + ", got " + announced);
-        try {
-            return mapper.readTree(matching.get(0).payload());
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
-        }
+        return matching.get(0);
+    }
+
+    private List<JsonNode> allOn(String topic) {
+        return announced.stream()
+                .filter(o -> o.topic().equals(topic))
+                .map(o -> {
+                    try {
+                        return mapper.readTree(o.payload());
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                })
+                .toList();
     }
 }

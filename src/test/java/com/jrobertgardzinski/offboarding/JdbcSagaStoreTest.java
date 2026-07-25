@@ -1,5 +1,6 @@
 package com.jrobertgardzinski.offboarding;
 
+import com.jrobertgardzinski.offboarding.application.SagaStore;
 import com.jrobertgardzinski.offboarding.infrastructure.Database;
 import com.jrobertgardzinski.offboarding.infrastructure.JdbcSagaStore;
 import org.junit.jupiter.api.BeforeEach;
@@ -7,25 +8,37 @@ import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The JDBC adapter on the same H2 (PostgreSQL mode) the dev profile runs — the same Flyway
  * migrations as production, no second schema to drift. Exercises what the in-memory double
- * mirrors: the running-saga lookup, the once-latch on completion, and the overdue sweep.
+ * mirrors: the running-saga lookup, the once-latch on completion, the retry-then-compensate
+ * sweep, the outbox flag, and the retention window — plus the V2 UNIQUE constraints under
+ * genuine thread races.
  */
 class JdbcSagaStoreTest {
 
     private static final Set<String> THREE = Set.of("memes", "comments", "collections");
     private static final Instant T0 = Instant.parse("2026-07-11T12:00:00Z");
+    /** maxRetries=0: compensate on the first overdue sweep, the pre-retry behaviour. */
+    private static final int NO_RETRIES = 0;
 
     private final DataSource dataSource = Database.migratedDataSource();
     private final JdbcSagaStore store = new JdbcSagaStore(dataSource);
@@ -56,19 +69,101 @@ class JdbcSagaStoreTest {
     }
 
     @Test
+    void racing_starts_with_the_same_fact_agree_on_one_saga() throws Exception {
+        // both threads pass the read-before-insert together; the fact_id UNIQUE turns one insert
+        // into a 23505 and the loser must adopt the winner's saga instead of failing
+        UUID fact = UUID.randomUUID();
+        List<UUID> sagas = race(
+                () -> store.start(fact, "race@example.com", T0),
+                () -> store.start(fact, "race@example.com", T0));
+        assertEquals(sagas.get(0), sagas.get(1), "a replayed fact must not fork under a race either");
+    }
+
+    @Test
+    void racing_starts_for_the_same_email_agree_on_one_saga() throws Exception {
+        // different facts, same account: the running_email UNIQUE (V2) is what makes "one running
+        // saga per email" hold even when the application-level check races
+        List<UUID> sagas = race(
+                () -> store.start(UUID.randomUUID(), "race@example.com", T0),
+                () -> store.start(UUID.randomUUID(), "race@example.com", T0));
+        assertEquals(sagas.get(0), sagas.get(1), "two facts must not fork two sagas for one email");
+    }
+
+    private List<UUID> race(java.util.concurrent.Callable<UUID> left,
+                            java.util.concurrent.Callable<UUID> right) throws Exception {
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
+            Future<UUID> a = pool.submit(() -> {
+                barrier.await();
+                return left.call();
+            });
+            Future<UUID> b = pool.submit(() -> {
+                barrier.await();
+                return right.call();
+            });
+            return List.of(a.get(), b.get());
+        }
+    }
+
+    @Test
+    void a_second_started_row_for_one_email_is_rejected_by_the_database_itself() throws Exception {
+        // belt and braces: even code that skips the adapter cannot fork a running saga
+        store.start(UUID.randomUUID(), "alice@example.com", T0);
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement(
+                     "INSERT INTO offboarding_sagas "
+                             + "(id, fact_id, email, running_email, state, created_at, updated_at) "
+                             + "VALUES (?, ?, 'alice@example.com', 'alice@example.com', 'STARTED', ?, ?)")) {
+            insert.setObject(1, UUID.randomUUID());
+            insert.setObject(2, UUID.randomUUID());
+            insert.setTimestamp(3, Timestamp.from(T0));
+            insert.setTimestamp(4, Timestamp.from(T0));
+            SQLException rejected = assertThrows(SQLException.class, insert::executeUpdate);
+            assertEquals("23505", rejected.getSQLState(), "the running_email UNIQUE must fire");
+        }
+    }
+
+    @Test
     void only_the_last_required_confirmation_completes_and_only_once() {
         store.start(UUID.randomUUID(), "alice@example.com", T0);
-        assertFalse(store.confirm("alice@example.com", "memes", THREE, T0));
-        assertFalse(store.confirm("alice@example.com", "memes", THREE, T0), "duplicate is a no-op");
-        assertFalse(store.confirm("alice@example.com", "comments", THREE, T0));
-        assertTrue(store.confirm("alice@example.com", "collections", THREE, T0), "the last one completes");
-        assertFalse(store.confirm("alice@example.com", "collections", THREE, T0),
+        assertTrue(store.confirm("alice@example.com", null, "memes", THREE, T0).isEmpty());
+        assertTrue(store.confirm("alice@example.com", null, "memes", THREE, T0).isEmpty(),
+                "duplicate is a no-op");
+        assertTrue(store.confirm("alice@example.com", null, "comments", THREE, T0).isEmpty());
+        assertTrue(store.confirm("alice@example.com", null, "collections", THREE, T0).isPresent(),
+                "the last one completes");
+        assertTrue(store.confirm("alice@example.com", null, "collections", THREE, T0).isEmpty(),
                 "the once-latch: completion is reported to exactly one caller");
     }
 
     @Test
+    void a_confirmation_addressed_by_saga_id_lands_on_that_saga() {
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        assertEquals(saga,
+                store.confirm("alice@example.com", saga, "memes", Set.of("memes"), T0).orElseThrow(),
+                "the echoed saga id is the precise address");
+    }
+
+    @Test
+    void a_confirmation_echoing_a_finished_saga_is_a_stray_and_never_touches_a_newer_one() {
+        UUID finished = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        store.complete("alice@example.com", T0);
+        assertTrue(store.confirm("alice@example.com", finished, "memes", THREE, T0).isEmpty(),
+                "an echo of a finished saga is a stray, recorded nowhere");
+        UUID second = store.start(UUID.randomUUID(), "alice@example.com", T0.plusSeconds(10));
+        assertTrue(store.confirm("alice@example.com", finished, "memes", Set.of("memes"),
+                        T0.plusSeconds(11)).isEmpty(),
+                "even with a NEW saga running for the email, the stale id must stay a stray — "
+                        + "falling back to the email lookup would let a closed case confirm the new one");
+        assertEquals(second,
+                store.confirm("alice@example.com", second, "memes", Set.of("memes"), T0.plusSeconds(12))
+                        .orElseThrow(),
+                "the new saga still completes on its OWN confirmation — the stray left no trace");
+    }
+
+    @Test
     void a_stray_confirmation_records_nothing() {
-        assertFalse(store.confirm("nobody@example.com", "memes", THREE, T0));
+        assertTrue(store.confirm("nobody@example.com", null, "memes", THREE, T0).isEmpty());
     }
 
     @Test
@@ -82,16 +177,86 @@ class JdbcSagaStoreTest {
     void the_sweep_compensates_only_the_overdue_and_only_once() {
         store.start(UUID.randomUUID(), "old@example.com", T0);
         store.start(UUID.randomUUID(), "fresh@example.com", T0.plusSeconds(300));
-        List<String> compensated = store.compensateOverdue(T0.plusSeconds(120), T0.plusSeconds(400));
-        assertEquals(List.of("old@example.com"), compensated);
-        assertEquals(List.of(), store.compensateOverdue(T0.plusSeconds(120), T0.plusSeconds(400)),
+        SagaStore.SweepResult swept =
+                store.sweepOverdue(T0.plusSeconds(120), NO_RETRIES, T0.plusSeconds(400));
+        assertEquals(List.of("old@example.com"),
+                swept.compensated().stream().map(SagaStore.Compensated::email).toList());
+        assertEquals(List.of(),
+                store.sweepOverdue(T0.plusSeconds(120), NO_RETRIES, T0.plusSeconds(400)).compensated(),
                 "a compensated saga does not compensate again");
+    }
+
+    @Test
+    void the_sweep_retries_before_capitulating() {
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        store.confirm("alice@example.com", null, "memes", THREE, T0);
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            SagaStore.SweepResult swept =
+                    store.sweepOverdue(T0.plusSeconds(120), 3, T0.plusSeconds(120L + attempt));
+            assertEquals(List.of(new SagaStore.Retry(saga, "alice@example.com")), swept.retries(),
+                    "attempt " + attempt + " re-commands instead of giving up");
+            assertEquals(List.of(), swept.compensated());
+        }
+        SagaStore.SweepResult last = store.sweepOverdue(T0.plusSeconds(120), 3, T0.plusSeconds(200));
+        assertEquals(List.of(), last.retries(), "the retries are spent");
+        assertEquals(List.of(new SagaStore.Compensated(saga, "alice@example.com", Set.of("memes"))),
+                last.compensated(),
+                "capitulation names the participants that DID purge — the partial-purge disclosure");
     }
 
     @Test
     void a_completed_saga_never_compensates() {
         store.start(UUID.randomUUID(), "alice@example.com", T0);
-        store.confirm("alice@example.com", "memes", Set.of("memes"), T0);
-        assertEquals(List.of(), store.compensateOverdue(T0.plusSeconds(9999), T0.plusSeconds(10000)));
+        store.confirm("alice@example.com", null, "memes", Set.of("memes"), T0);
+        assertEquals(List.of(),
+                store.sweepOverdue(T0.plusSeconds(9999), NO_RETRIES, T0.plusSeconds(10000)).compensated());
+    }
+
+    @Test
+    void a_finished_saga_owes_its_outcome_until_marked_announced() {
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        store.confirm("alice@example.com", null, "memes", Set.of("memes"), T0.plusSeconds(1));
+        List<SagaStore.PendingOutcome> pending = store.unannouncedOutcomes(T0.plusSeconds(60));
+        assertEquals(List.of(new SagaStore.PendingOutcome(saga, "alice@example.com", "COMPLETED", Set.of())),
+                pending, "completing does NOT announce — the outbox owes the outcome");
+        store.markAnnounced(saga);
+        assertEquals(List.of(), store.unannouncedOutcomes(T0.plusSeconds(60)),
+                "the announced mark settles the debt");
+    }
+
+    @Test
+    void a_fresh_unannounced_outcome_is_not_republished_yet() {
+        store.start(UUID.randomUUID(), "alice@example.com", T0);
+        store.confirm("alice@example.com", null, "memes", Set.of("memes"), T0.plusSeconds(50));
+        assertEquals(List.of(), store.unannouncedOutcomes(T0.plusSeconds(50)),
+                "the age guard keeps outcomes merely in flight from doubling");
+    }
+
+    @Test
+    void a_compensated_outcome_carries_the_partial_purge() {
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        store.confirm("alice@example.com", null, "comments", THREE, T0);
+        store.sweepOverdue(T0.plusSeconds(120), NO_RETRIES, T0.plusSeconds(130));
+        assertEquals(Set.of("comments"),
+                store.unannouncedOutcomes(T0.plusSeconds(999)).get(0).confirmed());
+    }
+
+    @Test
+    void the_retention_window_deletes_finished_and_announced_sagas_with_their_confirmations() {
+        UUID old = store.start(UUID.randomUUID(), "old@example.com", T0);
+        store.confirm("old@example.com", null, "memes", Set.of("memes"), T0.plusSeconds(1));
+        store.markAnnounced(old);
+        store.start(UUID.randomUUID(), "running@example.com", T0);
+        UUID unannounced = store.start(UUID.randomUUID(), "owing@example.com", T0.plusSeconds(2));
+        store.complete("owing@example.com", T0.plusSeconds(3));
+
+        assertEquals(1, store.deleteFinishedBefore(T0.plusSeconds(60)),
+                "only old + finished + announced goes; " + unannounced + " still owes its outcome");
+        assertTrue(store.confirm("old@example.com", old, "memes", Set.of("memes"), T0.plusSeconds(61))
+                        .isEmpty(),
+                "the deleted saga is gone for confirmations too");
+        assertEquals(List.of(), store.unannouncedOutcomes(T0.plusSeconds(1)).stream()
+                        .filter(pending -> pending.email().equals("old@example.com")).toList(),
+                "no orphaned rows left behind");
     }
 }

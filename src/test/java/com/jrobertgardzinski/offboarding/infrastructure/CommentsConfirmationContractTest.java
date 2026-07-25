@@ -28,15 +28,22 @@ class CommentsConfirmationContractTest {
         return builder.expectsToReceive("a user content purged confirmation")
                 .withContent(new PactDslJsonBody()
                         .stringValue("type", "USER_CONTENT_PURGED")
-                        .stringType("email", "leaver@example.com"))
+                        .stringType("email", "leaver@example.com")
+                        // the saga id the purge command carried, echoed back — how a confirmation
+                        // addresses its saga without leaning on the email
+                        .uuid("sagaId"))
                 .toPact();
     }
 
     @Test
     @PactTestFor(pactMethod = "purgeConfirmation")
-    void theConfirmationAdvancesTheSaga(List<Message> messages) {
-        RouterFixture fixture = router().withRunningSagaFor("leaver@example.com");
-        fixture.router.handle("comments-events", messages.get(0).contentsAsString());
+    void theConfirmationAdvancesTheSaga(List<Message> messages) throws Exception {
+        String payload = messages.get(0).contentsAsString();
+        // the confirmation echoes the id of ITS saga — seed the saga under exactly that id (an
+        // echoed id matching no running saga is a stray by design)
+        RouterFixture fixture = router()
+                .withRunningSaga(RouterFixture.sagaIdOf(payload), "leaver@example.com");
+        fixture.router.handle("comments-events", payload);
         assertTrue(fixture.store.all().get(0).confirmed.contains("comments"),
                 "the comments confirmation must be recorded against the running saga");
     }

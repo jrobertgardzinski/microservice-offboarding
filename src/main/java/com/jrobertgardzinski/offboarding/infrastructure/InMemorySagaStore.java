@@ -8,6 +8,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -16,17 +17,31 @@ public class InMemorySagaStore implements SagaStore {
 
     /** One saga's mutable progress — package-visible for the tests' state fingerprints. */
     public static final class Saga {
-        public final UUID id = UUID.randomUUID();
+        public final UUID id;
         public final UUID factId;
         public final String email;
         public String state = "STARTED";
         public final Instant createdAt;
+        public Instant updatedAt;
         public final Set<String> confirmed = new HashSet<>();
+        /** The mini-outbox flag: set only after the outcome demonstrably reached the broker. */
+        public boolean announced;
+        public int retries;
 
         Saga(UUID factId, String email, Instant createdAt) {
+            this(UUID.randomUUID(), factId, email, createdAt);
+        }
+
+        Saga(UUID id, UUID factId, String email, Instant createdAt) {
+            this.id = id;
             this.factId = factId;
             this.email = email;
             this.createdAt = createdAt;
+            this.updatedAt = createdAt;
+        }
+
+        private boolean finished() {
+            return "COMPLETED".equals(state) || "COMPENSATED".equals(state);
         }
     }
 
@@ -46,35 +61,90 @@ public class InMemorySagaStore implements SagaStore {
     }
 
     @Override
-    public boolean confirm(String email, String participant, Set<String> required, Instant at) {
-        return running(email).map(saga -> {
+    public Optional<UUID> confirm(String email, UUID sagaId, String participant, Set<String> required,
+                                  Instant at) {
+        // the saga id, when echoed, is the precise address AND the final word: a stale id (the
+        // saga no longer STARTED) is a stray from a closed case, never an email fallback — the
+        // fallback exists solely for confirmations without the field. Mirrors the JDBC adapter.
+        Optional<Saga> target = sagaId != null
+                ? Optional.ofNullable(sagas.get(sagaId)).filter(saga -> "STARTED".equals(saga.state))
+                : running(email);
+        return target.flatMap(saga -> {
             saga.confirmed.add(participant);
             if (saga.confirmed.containsAll(required)) {
                 saga.state = "COMPLETED";   // the once-latch: running() no longer finds it
-                return true;
+                saga.updatedAt = at;
+                return Optional.of(saga.id);
             }
-            return false;
-        }).orElse(false);
+            return Optional.empty();
+        });
     }
 
     @Override
     public boolean complete(String email, Instant at) {
         return running(email).map(saga -> {
             saga.state = "COMPLETED";
+            saga.updatedAt = at;
             return true;
         }).orElse(false);
     }
 
     @Override
-    public List<String> compensateOverdue(Instant cutoff, Instant at) {
-        List<String> emails = new ArrayList<>();
+    public SweepResult sweepOverdue(Instant cutoff, int maxRetries, Instant at) {
+        List<Retry> retries = new ArrayList<>();
+        List<Compensated> compensated = new ArrayList<>();
         for (Saga saga : sagas.values()) {
             if ("STARTED".equals(saga.state) && saga.createdAt.isBefore(cutoff)) {
-                saga.state = "COMPENSATED";
-                emails.add(saga.email);
+                if (saga.retries < maxRetries) {
+                    saga.retries++;
+                    saga.updatedAt = at;
+                    retries.add(new Retry(saga.id, saga.email));
+                } else {
+                    saga.state = "COMPENSATED";
+                    saga.updatedAt = at;
+                    compensated.add(new Compensated(saga.id, saga.email, Set.copyOf(saga.confirmed)));
+                }
             }
         }
-        return emails;
+        return new SweepResult(retries, compensated);
+    }
+
+    @Override
+    public void markAnnounced(UUID sagaId) {
+        Saga saga = sagas.get(sagaId);
+        if (saga != null) {
+            saga.announced = true;
+        }
+    }
+
+    @Override
+    public List<PendingOutcome> unannouncedOutcomes(Instant olderThan) {
+        return sagas.values().stream()
+                .filter(saga -> saga.finished() && !saga.announced && saga.updatedAt.isBefore(olderThan))
+                .map(saga -> new PendingOutcome(saga.id, saga.email, saga.state,
+                        "COMPENSATED".equals(saga.state) ? Set.copyOf(saga.confirmed) : Set.<String>of()))
+                .toList();
+    }
+
+    @Override
+    public int deleteFinishedBefore(Instant olderThan) {
+        List<UUID> gone = sagas.values().stream()
+                .filter(saga -> saga.finished() && saga.announced && saga.updatedAt.isBefore(olderThan))
+                .map(saga -> saga.id)
+                .toList();
+        gone.forEach(sagas::remove);
+        return gone.size();
+    }
+
+    /**
+     * Test seeding only: open a running saga under a KNOWN id — what a contract test needs so a
+     * recorded confirmation example can echo the id of THE saga (a stale or unknown echoed id is
+     * a stray by design; see the JDBC adapter's confirm()).
+     */
+    UUID startWithId(UUID sagaId, UUID factId, String email, Instant at) {
+        Saga saga = new Saga(sagaId, factId, email, at);
+        sagas.put(saga.id, saga);
+        return saga.id;
     }
 
     /** The observable state, for the generic idempotence test's fingerprints. */
@@ -82,7 +152,7 @@ public class InMemorySagaStore implements SagaStore {
         return new ArrayList<>(sagas.values());
     }
 
-    private java.util.Optional<Saga> running(String email) {
+    private Optional<Saga> running(String email) {
         return sagas.values().stream()
                 .filter(saga -> saga.email.equals(email) && "STARTED".equals(saga.state))
                 .findFirst();

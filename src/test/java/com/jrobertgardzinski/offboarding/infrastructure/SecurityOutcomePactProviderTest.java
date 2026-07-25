@@ -62,7 +62,15 @@ class SecurityOutcomePactProviderTest {
         // started a minute before the fixture's fixed "now", swept two-minutes-plus later — overdue
         fixture.store.start(UUID.randomUUID(), "leaver@example.com",
                 java.time.Instant.parse("2026-07-11T11:00:00Z"));
-        return fixture.router.sweepOverdue().get(0).payload();
+        // the sweeper re-commands the purge until the retries are spent; only then does the real
+        // failure announcement fall out
+        for (int retry = 0; retry < com.jrobertgardzinski.offboarding.application.SweepOverdue
+                .DEFAULT_MAX_RETRIES; retry++) {
+            fixture.router.sweepOverdue();
+        }
+        return fixture.router.sweepOverdue().stream()
+                .filter(outgoing -> EventsRouter.OUTCOMES_TOPIC.equals(outgoing.topic()))
+                .findFirst().orElseThrow().payload();
     }
 
     private static String confirmation() {

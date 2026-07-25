@@ -25,6 +25,9 @@
         <cucumber.version>7.20.1</cucumber.version>
         <junit-suite.version>1.11.3</junit-suite.version>
         <allure.version>2.29.0</allure.version>
+        <!-- the same Testcontainers the workspace already runs (microservice-memes gets 1.21.2
+             from the Spring Boot 3.5.3 BOM; this Helidon build pins it explicitly) -->
+        <testcontainers.version>1.21.2</testcontainers.version>
     </properties>
 
     <dependencyManagement>
@@ -138,6 +141,21 @@
             <groupId>org.junit.platform</groupId>
             <artifactId>junit-platform-suite</artifactId>
             <version>${junit-suite.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- a real broker for the KafkaLoop integration test: the transport guarantees (offsets
+             past poison pills, flush-before-commit, rewind-and-retry) only exist against actual
+             Kafka; skipped where docker is absent, like memes' MinIO test -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
             <scope>test</scope>
         </dependency>
         <!-- consumer-driven contracts: as a CONSUMER this service pins the deletion fact
