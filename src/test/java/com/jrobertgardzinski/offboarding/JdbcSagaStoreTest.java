@@ -196,7 +196,8 @@ class JdbcSagaStoreTest {
             assertEquals(List.of(new SagaStore.Retry(saga, "alice@example.com")), swept.retries(),
                     "attempt " + attempt + " re-commands instead of giving up");
             assertEquals(List.of(), swept.compensated());
-            store.retryDelivered(saga);   // the loop's word that the re-command reached the broker
+            assertTrue(store.retryDelivered(saga),   // the loop's word that the re-command
+                    "a delivery against a STARTED saga must report the charge");   // reached the broker
         }
         SagaStore.SweepResult last = store.sweepOverdue(T0.plusSeconds(120), 3, T0.plusSeconds(200));
         assertEquals(List.of(), last.retries(), "the retries are spent");
@@ -264,8 +265,17 @@ class JdbcSagaStoreTest {
     void a_delivered_retry_is_not_counted_against_a_finished_saga() throws Exception {
         UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
         store.complete("alice@example.com", T0);
-        store.retryDelivered(saga);   // a late delivery report after completion must be a no-op
+        // a late delivery report after completion must be a no-op — and must SAY so (false),
+        // because the loop's retries-delivered metric counts only what was actually charged
+        assertFalse(store.retryDelivered(saga),
+                "a no-op on a finished saga must not report a charge");
         assertEquals(0, retriesInDb(saga), "a finished saga's counter must stay untouched");
+    }
+
+    @Test
+    void a_delivery_report_for_an_unknown_saga_reports_no_charge() {
+        assertFalse(store.retryDelivered(UUID.randomUUID()),
+                "no saga, no charge — the metric must not count deliveries into the void");
     }
 
     private int retriesInDb(UUID saga) throws SQLException {

@@ -93,8 +93,10 @@ public interface SagaStore {
      * counts against maxRetries now — and only now. A no-op unless the saga is still STARTED.
      * Also refreshes the saga's updated_at: the delivered re-command IS activity on the case, and
      * a table sorted by staleness must not show a just-re-asked saga as untouched since it opened.
+     * Returns whether the counter actually moved — false for the no-op on a finished or unknown
+     * saga — so the caller's retries-delivered metric counts charges, never no-ops.
      */
-    void retryDelivered(UUID sagaId);
+    boolean retryDelivered(UUID sagaId);
 
     /** The outbox's second half: the saga's outcome reached the broker, remember that. */
     void markAnnounced(UUID sagaId);

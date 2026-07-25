@@ -32,8 +32,9 @@ import java.util.Map;
  * {@code OFFBOARDING_SWEEPER_STALL_SEC}) — a broker outage does that, and restarting would not
  * fix the broker, so compose healthchecks and {@code depends_on} gate on it while dependants
  * wait. {@code /alive} (LIVENESS) turns 503 only when a loop thread died or stopped being
- * scheduled for longer than {@code OFFBOARDING_ALIVE_STALL_SEC} (default 120s = four max
- * backoffs) — THAT is what an orchestrator's liveness probe restarts; the k3s deployment
+ * scheduled for longer than {@code OFFBOARDING_ALIVE_STALL_SEC} (default 120s; floored at
+ * {@link #ALIVE_STALL_FLOOR}, derived from the producer's delivery timeout and the retry
+ * backoff) — THAT is what an orchestrator's liveness probe restarts; the k3s deployment
  * (HOSTING-K3S.md) is where a genuinely dead loop gets bounced without a human.
  */
 public final class Main {
@@ -47,6 +48,19 @@ public final class Main {
      *  sweeper's stall tolerance: liveness is stamped at most once per interval, so a smaller
      *  tolerance would flag a perfectly healthy sweeper as stalled. */
     static final Duration SWEEP_EVERY = Duration.ofSeconds(15);
+
+    /** The /alive stall tolerance's floor, DERIVED from the loop's own clocks (never a magic
+     *  number): during a broker outage one iteration legitimately holds a send/flush for up to
+     *  {@link KafkaLoop#DELIVERY_TIMEOUT} (= {@link KafkaLoop#MAX_BLOCK}) and then backs off up
+     *  to {@link KafkaLoop#MAX_BACKOFF}, so the tolerance covers two of the longer of those plus
+     *  one sweep interval of margin — below that a mere broker outage could outlast the probe
+     *  and read as a dead thread, restarting a pod a restart cannot fix. Currently 75s. */
+    static final Duration ALIVE_STALL_FLOOR =
+            max(KafkaLoop.DELIVERY_TIMEOUT, KafkaLoop.MAX_BACKOFF).multipliedBy(2).plus(SWEEP_EVERY);
+
+    private static Duration max(Duration a, Duration b) {
+        return a.compareTo(b) >= 0 ? a : b;
+    }
 
     private Main() {
     }
@@ -73,11 +87,12 @@ public final class Main {
         Duration sweeperStall = flooredStall("OFFBOARDING_SWEEPER_STALL_SEC",
                 Duration.ofSeconds(longEnv("OFFBOARDING_SWEEPER_STALL_SEC", 60, 1, Long.MAX_VALUE)),
                 SWEEP_EVERY);
-        // 120s default = four max backoffs (30s): a loop mid-outage keeps beating well inside
-        // it, a loop that stopped being scheduled cannot fake even one beat
-        Duration aliveStall = flooredStall("OFFBOARDING_ALIVE_STALL_SEC",
-                Duration.ofSeconds(longEnv("OFFBOARDING_ALIVE_STALL_SEC", 120, 1, Long.MAX_VALUE)),
-                SWEEP_EVERY);
+        // 120s default: covers the worst legitimate iteration gap during a broker outage —
+        // sweep interval (15s) + a send/flush blocked up to delivery.timeout (30s) + one max
+        // backoff (30s) — with room to spare; the floor below is derived from those same
+        // constants so a smaller configured value cannot turn an outage into a fake 503
+        Duration aliveStall = flooredAliveStall("OFFBOARDING_ALIVE_STALL_SEC",
+                Duration.ofSeconds(longEnv("OFFBOARDING_ALIVE_STALL_SEC", 120, 1, Long.MAX_VALUE)));
 
         DataSource dataSource = Database.migratedDataSource();
         SagaStore store = new JdbcSagaStore(dataSource);
@@ -181,6 +196,27 @@ public final class Main {
                         + " stalled; using {}s instead", name, configured.toSeconds(),
                 sweepEvery.toSeconds(), sweepEvery.toSeconds());
         return sweepEvery;
+    }
+
+    /**
+     * The /alive tolerance's own floor, {@link #ALIVE_STALL_FLOOR}: during a broker outage an
+     * iteration legitimately blocks for up to the producer's delivery timeout and then backs off,
+     * so a tolerance below twice the longer of those clocks (plus a sweep interval) would let a
+     * mere outage read as a dead thread — the exact restart-loop /alive exists to prevent.
+     */
+    static Duration flooredAliveStall(String name, Duration configured) {
+        if (configured.compareTo(ALIVE_STALL_FLOOR) >= 0) {
+            return configured;
+        }
+        LOG.warn("{}={}s is below the {}s floor derived from the loop's clocks (2 x max of"
+                        + " delivery.timeout {}s and max backoff {}s, plus the {}s sweep"
+                        + " interval) — a broker outage legitimately holds an iteration that"
+                        + " long, and a smaller tolerance would let /alive restart a pod over a"
+                        + " broker problem; using {}s instead",
+                name, configured.toSeconds(), ALIVE_STALL_FLOOR.toSeconds(),
+                KafkaLoop.DELIVERY_TIMEOUT.toSeconds(), KafkaLoop.MAX_BACKOFF.toSeconds(),
+                SWEEP_EVERY.toSeconds(), ALIVE_STALL_FLOOR.toSeconds());
+        return ALIVE_STALL_FLOOR;
     }
 
     /** {@code memes=memes-events,comments=comments-events} → {topic → participant}. */

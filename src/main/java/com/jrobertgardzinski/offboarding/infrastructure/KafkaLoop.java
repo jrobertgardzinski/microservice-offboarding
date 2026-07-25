@@ -50,14 +50,35 @@ public class KafkaLoop {
 
     static final String CID_HEADER = "X-Correlation-Id";
 
+    /** The longest a loop legitimately pauses between iterations: the retry backoff's cap. */
+    static final Duration MAX_BACKOFF = Duration.ofSeconds(30);
+
+    /**
+     * The producer's delivery clocks, set EXPLICITLY because /alive depends on them: a broker
+     * outage with records in the buffer makes {@code flush()} (and a blocked {@code send()})
+     * hold a loop iteration for up to {@code delivery.timeout.ms} — with Kafka's default of
+     * 120s one such iteration would outlast the /alive stall tolerance (same default 120s) and
+     * a mere broker outage would read as a dead thread, restarting a pod a restart cannot fix.
+     * 30s bounds the block well inside the tolerance; {@link Main#ALIVE_STALL_FLOOR} is derived
+     * from these same constants so the two can never drift apart again.
+     */
+    static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(30);
+    /** One in-flight request's timeout; two of these fit inside {@link #DELIVERY_TIMEOUT}. */
+    static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(15);
+    /** How long send() may block on metadata — the same bound as the delivery timeout. */
+    static final Duration MAX_BLOCK = Duration.ofSeconds(30);
+
     private static final Logger LOG = LoggerFactory.getLogger(KafkaLoop.class);
     private static final long INITIAL_BACKOFF_MS = 1_000;
-    private static final long MAX_BACKOFF_MS = 30_000;
+    private static final long MAX_BACKOFF_MS = MAX_BACKOFF.toMillis();
 
     private final EventsRouter router;
     private final SagaStore store;
     private final Collection<String> topics;
     private final Duration sweepEvery;
+    private final Duration deliveryTimeout;
+    private final Duration requestTimeout;
+    private final Duration maxBlock;
 
     private volatile boolean running = true;
     private volatile KafkaConsumer<String, String> consumer;
@@ -78,10 +99,22 @@ public class KafkaLoop {
 
     public KafkaLoop(EventsRouter router, SagaStore store, Collection<String> topics,
                      Duration sweepEvery) {
+        this(router, store, topics, sweepEvery, DELIVERY_TIMEOUT, REQUEST_TIMEOUT, MAX_BLOCK);
+    }
+
+    /**
+     * Test seam: the broker-outage test shrinks the producer's delivery clocks so proving "the
+     * beat outlives the outage" takes seconds, not the production thirty per blocked send.
+     */
+    KafkaLoop(EventsRouter router, SagaStore store, Collection<String> topics, Duration sweepEvery,
+              Duration deliveryTimeout, Duration requestTimeout, Duration maxBlock) {
         this.router = router;
         this.store = store;
         this.topics = topics;
         this.sweepEvery = sweepEvery;
+        this.deliveryTimeout = deliveryTimeout;
+        this.requestTimeout = requestTimeout;
+        this.maxBlock = maxBlock;
     }
 
     /**
@@ -127,8 +160,10 @@ public class KafkaLoop {
      * outage mid-backoff keeps /alive at 200 (restarting the process would not fix the broker)
      * and only a thread that genuinely stopped iterating past the tolerance — or died, reported
      * immediately — turns it 503, for an orchestrator's liveness probe to bounce the process.
-     * The tolerance must exceed the longest legitimate gap between iterations: the max backoff
-     * (30s) — Main's default of 120s covers several such gaps.
+     * The tolerance must exceed the longest legitimate gap between iterations: a sweep interval
+     * plus a send/flush blocked for up to {@link #DELIVERY_TIMEOUT}/{@link #MAX_BLOCK} (30s)
+     * plus one {@link #MAX_BACKOFF} (30s). {@link Main#ALIVE_STALL_FLOOR} computes the floor
+     * from these same constants, and Main's default of 120s covers the whole worst-case gap.
      */
     public boolean alive(Duration stallTolerance) {
         if (consumerThread == null || !consumerThread.isAlive()
@@ -250,8 +285,11 @@ public class KafkaLoop {
             if (each.outgoing().announcesSaga() != null) {
                 store.markAnnounced(each.outgoing().announcesSaga());
             }
-            if (each.outgoing().countsRetryFor() != null) {
-                store.retryDelivered(each.outgoing().countsRetryFor());
+            if (each.outgoing().countsRetryFor() != null
+                    && store.retryDelivered(each.outgoing().countsRetryFor())) {
+                // metered only when the store actually charged the counter: a delivery landing
+                // on a saga that meanwhile finished is a no-op there and must be one here too,
+                // or the metric would drift ahead of the sum of retries in the store
                 MetricsEndpoint.retryDelivered();
             }
         }
@@ -357,11 +395,20 @@ public class KafkaLoop {
         return props;
     }
 
-    private static Properties producerProps(String bootstrap) {
+    private Properties producerProps(String bootstrap) {
         Properties props = new Properties();
         props.put("bootstrap.servers", bootstrap);
         props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
         props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+        // the delivery clocks, EXPLICIT because /alive depends on them (see DELIVERY_TIMEOUT):
+        // during a broker outage flush() blocks an iteration for up to delivery.timeout.ms and a
+        // metadata-less send() for up to max.block.ms — both must stay well inside the /alive
+        // stall tolerance, whose floor Main derives from these very constants. Kafka's defaults
+        // (120s / 60s) would let one blocked iteration outlast the probe and turn an outage into
+        // a false "dead thread" restart
+        props.put("delivery.timeout.ms", String.valueOf(deliveryTimeout.toMillis()));
+        props.put("request.timeout.ms", String.valueOf(requestTimeout.toMillis()));
+        props.put("max.block.ms", String.valueOf(maxBlock.toMillis()));
         return props;
     }
 }

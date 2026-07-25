@@ -89,4 +89,33 @@ class MainConfigTest {
         assertEquals(Main.SWEEP_EVERY, Main.flooredStall("OFFBOARDING_SWEEPER_STALL_SEC",
                 Main.SWEEP_EVERY, Main.SWEEP_EVERY));
     }
+
+    @Test
+    void the_alive_floor_is_derived_from_the_producer_clocks_and_the_backoff() {
+        // never a magic number: 2 x max(delivery.timeout, max backoff) + one sweep interval —
+        // recomputed here from the same constants so a drift in either side breaks the build
+        Duration longestBlock = KafkaLoop.DELIVERY_TIMEOUT.compareTo(KafkaLoop.MAX_BACKOFF) >= 0
+                ? KafkaLoop.DELIVERY_TIMEOUT : KafkaLoop.MAX_BACKOFF;
+        assertEquals(longestBlock.multipliedBy(2).plus(Main.SWEEP_EVERY), Main.ALIVE_STALL_FLOOR);
+        assertTrue(Main.ALIVE_STALL_FLOOR.compareTo(Duration.ofSeconds(120)) < 0,
+                "the documented 120s default must sit above the floor");
+    }
+
+    @Test
+    void an_alive_stall_below_the_derived_floor_is_floored() {
+        // a tolerance below the floor would let a broker outage (send/flush legitimately blocked
+        // up to delivery.timeout, then the backoff) read as a dead thread and restart the pod
+        assertEquals(Main.ALIVE_STALL_FLOOR, Main.flooredAliveStall("OFFBOARDING_ALIVE_STALL_SEC",
+                Duration.ofSeconds(30)));
+        assertEquals(Main.ALIVE_STALL_FLOOR, Main.flooredAliveStall("OFFBOARDING_ALIVE_STALL_SEC",
+                Main.ALIVE_STALL_FLOOR.minusSeconds(1)));
+    }
+
+    @Test
+    void an_alive_stall_at_or_above_the_derived_floor_is_kept() {
+        assertEquals(Duration.ofSeconds(120), Main.flooredAliveStall("OFFBOARDING_ALIVE_STALL_SEC",
+                Duration.ofSeconds(120)));
+        assertEquals(Main.ALIVE_STALL_FLOOR, Main.flooredAliveStall("OFFBOARDING_ALIVE_STALL_SEC",
+                Main.ALIVE_STALL_FLOOR));
+    }
 }

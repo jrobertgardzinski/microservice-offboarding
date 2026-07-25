@@ -114,14 +114,16 @@ public class InMemorySagaStore implements SagaStore {
     }
 
     @Override
-    public void retryDelivered(UUID sagaId) {
+    public boolean retryDelivered(UUID sagaId) {
         Saga saga = sagas.get(sagaId);
         if (saga != null && "STARTED".equals(saga.state)) {
             saga.retries++;
             // the delivery just happened, so wall clock — mirrors the JDBC adapter's
             // CURRENT_TIMESTAMP; harmless to the finished states' age guards (STARTED only)
             saga.updatedAt = Instant.now();
+            return true;   // charged — mirrors the JDBC adapter's updated-row count
         }
+        return false;      // the no-op on a finished or unknown saga: nothing to meter
     }
 
     @Override

@@ -191,19 +191,21 @@ public class JdbcSagaStore implements SagaStore {
     }
 
     @Override
-    public void retryDelivered(UUID sagaId) {
+    public boolean retryDelivered(UUID sagaId) {
         // the delivered-first discipline (see SagaStore): only a re-command the broker ACCEPTED
         // moves the counter, so the state guard keeps a late delivery off a finished saga.
         // updated_at moves too — the database's own clock, because this method is the transport's
         // report of a delivery that JUST happened; the saga's business timestamps stay the
-        // caller's. Only STARTED sagas qualify, so the finished states' age guards never see it
+        // caller's. Only STARTED sagas qualify, so the finished states' age guards never see it.
+        // The updated-row count IS the answer: 0 rows means the no-op on a finished or unknown
+        // saga, and the caller's metric must not count what was never charged
         try (Connection connection = dataSource.getConnection();
              PreparedStatement update = connection.prepareStatement(
                      "UPDATE offboarding_sagas SET retries = retries + 1, "
                              + "updated_at = CURRENT_TIMESTAMP "
                              + "WHERE id = ? AND state = 'STARTED'")) {
             update.setObject(1, sagaId);
-            update.executeUpdate();
+            return update.executeUpdate() == 1;
         } catch (SQLException e) {
             throw new IllegalStateException("could not count the delivered retry", e);
         }

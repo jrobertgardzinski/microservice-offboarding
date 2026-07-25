@@ -43,6 +43,15 @@ public class EventsRouter {
     public static final String OUTCOMES_TOPIC = "offboarding-events";
 
     /**
+     * The cap on the leaver's policy object, serialised (UTF-8 bytes): this service only FERRIES
+     * the policy — it never reads it — so an absurdly large blob would ride into every saga row
+     * (stored verbatim for the sweeper's re-command) and every re-commanded purge without limit.
+     * Past the cap the saga proceeds WITHOUT the policy (the participants' defaults), exactly
+     * like an unreadable stored policy: WARN, never a dropped saga and never a wedge.
+     */
+    static final int MAX_POLICY_BYTES = 8 * 1024;
+
+    /**
      * An event to publish: the loop adds the correlation-id header and sends. When the event is a
      * saga's outcome, {@code announcesSaga} names it so the loop can mark the outbox after a
      * successful flush; when it is the sweeper RE-commanding an overdue purge,
@@ -158,9 +167,22 @@ public class EventsRouter {
             return List.of();
         }
         // the policy is stored with the saga (verbatim, only when it is the object the command
-        // would carry) so the sweeper's re-command can repeat the original command
-        JsonNode policy = fact.path("policy");
-        String storedPolicy = policy.isObject() ? write(policy) : null;
+        // would carry) so the sweeper's re-command can repeat the original command — capped at
+        // MAX_POLICY_BYTES: an oversized blob is dropped from the saga AND the command alike
+        // (keeping the two identical, so the re-command still repeats the original), and the
+        // purge proceeds on the participants' defaults, like with an unreadable stored policy
+        JsonNode policy = fact.path("policy").isObject() ? fact.path("policy") : null;
+        String storedPolicy = policy == null ? null : write(policy);
+        if (storedPolicy != null
+                && storedPolicy.getBytes(StandardCharsets.UTF_8).length > MAX_POLICY_BYTES) {
+            LOG.warn("policy on the deletion fact serialises to {} bytes, over the {}-byte cap;"
+                            + " starting the saga without it — the purge will use the"
+                            + " participants' defaults ({})",
+                    storedPolicy.getBytes(StandardCharsets.UTF_8).length, MAX_POLICY_BYTES,
+                    summarised(fact));
+            policy = null;
+            storedPolicy = null;
+        }
         BeginOffboarding.Begun begun = begin.execute(factId, email, storedPolicy, Instant.now(clock));
         if (begun.completedImmediately()) {
             LOG.info("no content participants configured; portal instantly clean for {}", masked(email));

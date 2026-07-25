@@ -293,6 +293,7 @@ class KafkaLoopIntegrationTest {
         createTopics(facts, memesTopic, EventsRouter.COMMANDS_TOPIC, EventsRouter.OUTCOMES_TOPIC);
         // a saga already long overdue when the loop wakes up — the sweeper's case from sweep one
         store.start(UUID.randomUUID(), email, Instant.now().minusSeconds(600));
+        long meteredBefore = retriesDeliveredMetric();
         try {
             // the commands topic rejects EVERY send (RecordTooLarge — the same deterministic
             // stand-in for a dead broker as the outcomes-outbox test): sweeps keep offering the
@@ -306,6 +307,8 @@ class KafkaLoopIntegrationTest {
 
             Thread.sleep(4_500);   // several sweeps, every re-command bouncing off the broker
             assertEquals(0, retriesInDb(email), "an undelivered re-command must not burn a retry");
+            assertEquals(meteredBefore, retriesDeliveredMetric(),
+                    "the retries-delivered metric must not move while nothing was delivered");
             assertEquals("STARTED", sagaState(email), "the saga must keep waiting for its retry — "
                     + "compensating with no re-command on the wire is the regression this pins");
         } finally {
@@ -321,6 +324,21 @@ class KafkaLoopIntegrationTest {
                 () -> retriesInDb(email) >= 1);
         awaitTrue("with the retries spent and the silence persisting, the saga compensates",
                 Duration.ofSeconds(45), () -> "COMPENSATED".equals(sagaState(email)));
+        // the metric counts exactly the charges the store actually took — no no-ops: every
+        // metered delivery has its row in the database, none metered twice, none into the void
+        awaitTrue("the retries-delivered metric settles on the store's own count",
+                Duration.ofSeconds(10),
+                () -> retriesDeliveredMetric() - meteredBefore == retriesInDb(email));
+    }
+
+    /** The current offboarding_retries_delivered_total, read off the exposition text. */
+    private static long retriesDeliveredMetric() {
+        for (String line : MetricsEndpoint.body().split("\n")) {
+            if (line.startsWith("offboarding_retries_delivered_total ")) {
+                return Long.parseLong(line.substring(line.lastIndexOf(' ') + 1).trim());
+            }
+        }
+        throw new IllegalStateException("offboarding_retries_delivered_total not exposed");
     }
 
     /** SET a max.message.bytes override on the shared outcomes topic, or DELETE it (null). */
@@ -424,6 +442,47 @@ class KafkaLoopIntegrationTest {
         stop(loop);
         assertFalse(loop.alive(Duration.ofHours(1)),
                 "a dead loop thread reads dead immediately, no stall tolerance to wait out");
+    }
+
+    // ------- (g) /alive vs delivery.timeout: a broker outage must never read as a dead thread
+
+    @Test
+    void a_broker_outage_keeps_the_liveness_beat_inside_the_producer_clock_rhythm()
+            throws Exception {
+        String run = run();
+        String email = "deadair-alive-" + run + "@example.com";
+        // an overdue saga: every sweep re-commands it, so the sweeper actually SENDS into the
+        // dead air — the exact iteration a default-config producer would hold for max.block 60s
+        // / delivery.timeout 120s, outlasting the /alive tolerance and faking a dead thread
+        store.start(UUID.randomUUID(), email, Instant.now().minusSeconds(600));
+
+        // nothing listens on port 1; the test seam shrinks the delivery clocks (2s instead of
+        // the production 30s) so the proof runs in seconds while keeping the same shape:
+        // clocks bounded well inside the observed tolerance
+        Duration deliveryTimeout = Duration.ofSeconds(2);
+        String facts = "security-events-" + run;
+        EventsRouter router = new EventsRouter(facts, Map.of(),
+                new BeginOffboarding(store, Set.of()),
+                new RecordConfirmation(store, Set.of()),
+                new SweepOverdue(store, Duration.ofMinutes(5)), MAPPER, Clock.systemUTC());
+        KafkaLoop loop = new KafkaLoop(router, store, List.of(facts), Duration.ofMillis(200),
+                deliveryTimeout, Duration.ofSeconds(1), deliveryTimeout);
+        loop.start("localhost:1");
+        loops.add(loop);
+
+        // through 11s of outage the beat never ages past sweep + max.block + the grown backoff
+        // (0.2 + 2 + at most 4s within this window) — a 10s leash the UNBOUNDED producer could
+        // not survive, its first blocked send alone holding the iteration for 60s
+        long observeUntil = System.currentTimeMillis() + 11_000;
+        while (System.currentTimeMillis() < observeUntil) {
+            assertTrue(loop.alive(Duration.ofSeconds(10)),
+                    "a broker outage must never stall the liveness beat: /alive restarting the"
+                            + " pod would not fix the broker");
+            Thread.sleep(250);
+        }
+        // readiness is allowed — expected, even — to scream through the same outage
+        assertFalse(loop.healthy(Duration.ofHours(1), Duration.ofSeconds(2)),
+                "the sweeper cannot COMPLETE a pass against dead air, so /health reports it");
     }
 
     // ---------------------------------------------------------------------------- the wiring
@@ -644,8 +703,8 @@ class KafkaLoopIntegrationTest {
         }
 
         @Override
-        public void retryDelivered(UUID sagaId) {
-            inner.retryDelivered(sagaId);
+        public boolean retryDelivered(UUID sagaId) {
+            return inner.retryDelivered(sagaId);
         }
 
         @Override
