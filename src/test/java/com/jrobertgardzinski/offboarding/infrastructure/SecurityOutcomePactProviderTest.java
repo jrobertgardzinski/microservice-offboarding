@@ -22,15 +22,27 @@ import java.util.UUID;
  * proves the REAL router emits those shapes — the completion by walking a saga through its last
  * confirmation, the failure by sweeping an overdue one. Skipped when security's offboarding pact
  * is not checked out next to this repo.
+ *
+ * <p>Note where that pact lives: the three CONTENT participants are siblings inside the portal
+ * workspace ({@code ../microservice-memes} and friends), but security belongs to the shared
+ * identity stack one level up — the same {@code ../shared} the compose file includes and
+ * {@code infra-up.sh} builds first. This test used to look for it among the portal siblings, where
+ * it has not been since the workspace split, so it silently skipped on every run: a contract test
+ * that never runs is indistinguishable from one that passes, which is the worst thing a contract
+ * test can be.
  */
 @Provider("microservice-offboarding")
-@PactFolder("../microservice-security/pacts")
+@PactFolder(SecurityOutcomePactProviderTest.PACT_FOLDER)
 @EnabledIf(value = "pactCheckedOut",
-        disabledReason = "microservice-security's offboarding pact is not checked out next to this repo")
+        disabledReason = "microservice-security's offboarding pact is not checked out in ../../shared")
 class SecurityOutcomePactProviderTest {
 
+    /** Relative to the MODULE directory, which is what surefire makes the working directory. */
+    static final String PACT_FOLDER = "../../shared/microservice-security/pacts";
+
     static boolean pactCheckedOut() {
-        return Files.exists(Path.of("../microservice-security/pacts/microservice-security-microservice-offboarding.json"));
+        return Files.exists(
+                Path.of(PACT_FOLDER, "microservice-security-microservice-offboarding.json"));
     }
 
     @BeforeEach
