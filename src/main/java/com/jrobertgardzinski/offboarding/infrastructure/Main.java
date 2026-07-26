@@ -46,6 +46,10 @@ public final class Main {
     static final String DEFAULT_PARTICIPANTS =
             "memes=memes-events,comments=comments-events,collections=usercollections-events";
 
+    /** The variable {@link #parseParticipants} refusals name, so the operator gets told WHERE to
+     *  fix it — the same courtesy {@link #longEnv} pays for the numeric ones. */
+    static final String PARTICIPANTS_ENV = "OFFBOARDING_PARTICIPANTS";
+
     /** How often the sweeper wakes ({@link KafkaLoop} sweep interval) — also the floor for the
      *  sweeper's stall tolerance: liveness is stamped at most once per interval, so a smaller
      *  tolerance would flag a perfectly healthy sweeper as stalled. */
@@ -139,7 +143,7 @@ public final class Main {
         int port = (int) longEnv("OFFBOARDING_PORT", 8094, 1, 65535);
         String factsTopic = System.getenv().getOrDefault("OFFBOARDING_FACTS_TOPIC", "security-events");
         Map<String, String> participantByTopic = parseParticipants(
-                System.getenv().getOrDefault("OFFBOARDING_PARTICIPANTS", DEFAULT_PARTICIPANTS));
+                System.getenv().getOrDefault(PARTICIPANTS_ENV, DEFAULT_PARTICIPANTS));
         Duration purgeTimeout = Duration.ofSeconds(
                 longEnv("OFFBOARDING_PURGE_TIMEOUT_SEC", 120, 1, Long.MAX_VALUE));
         int maxPurgeRetries = (int) longEnv("OFFBOARDING_MAX_PURGE_RETRIES",
@@ -217,8 +221,13 @@ public final class Main {
                 .build()
                 .start();
 
+        // the COUNT next to the set, not just the set: it is the number of confirmations every
+        // saga will wait for, and an operator comparing it against the services actually deployed
+        // is the second line of defence behind parseParticipants' duplicate refusal (a spec that
+        // maps three topics onto two names cannot boot any more, but "0 participants" — an empty
+        // spec, which is legal — still deserves to be readable at a glance in the boot log)
         System.out.println("offboarding listening on port " + server.port()
-                + " (participants: " + participants + ")");
+                + " (" + participants.size() + " participants: " + participants + ")");
     }
 
     /**
@@ -300,9 +309,25 @@ public final class Main {
         return ALIVE_STALL_FLOOR;
     }
 
-    /** {@code memes=memes-events,comments=comments-events} → {topic → participant}. */
+    /**
+     * {@code memes=memes-events,comments=comments-events} → {topic → participant}.
+     *
+     * <p>BOTH halves have to be unique, and a repeat refuses to boot instead of quietly shrinking
+     * the saga. A repeated TOPIC used to overwrite the earlier entry, so one participant fell off
+     * the subscription list without a word. A repeated NAME is worse, because the damage is
+     * invisible even in this map: {@code main()} derives the set of confirmations to wait for from
+     * {@code values()}, so two entries under one name collapse into one and the saga waits for
+     * FEWER confirmations than there are participants holding the leaver's content. It then
+     * announces {@code PORTAL_CONTENT_PURGED} on an incomplete quorum, security deletes the
+     * account for good — and the participant nobody waited for has no timeout and no compensation
+     * left, so if its purge did fail, nothing will ever say so. Data gone and the verdict false is
+     * the one outcome this service exists to prevent; a typo in one env var must not be able to
+     * buy it. Hence the refusal NAMES the variable, both offending values and the consequence,
+     * like every other boot-time check here.
+     */
     static Map<String, String> parseParticipants(String spec) {
         Map<String, String> byTopic = new LinkedHashMap<>();
+        Map<String, String> topicByName = new LinkedHashMap<>();
         for (String pair : spec.split(",")) {
             String trimmed = pair.trim();
             if (trimmed.isEmpty()) {
@@ -312,7 +337,23 @@ public final class Main {
             if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
                 throw new IllegalArgumentException("participant entry must be name=topic: " + trimmed);
             }
-            byTopic.put(parts[1].trim(), parts[0].trim());
+            String name = parts[0].trim();
+            String topic = parts[1].trim();
+            String topicHeldBy = byTopic.putIfAbsent(topic, name);
+            if (topicHeldBy != null) {
+                throw new IllegalArgumentException(PARTICIPANTS_ENV + " lists the topic \"" + topic
+                        + "\" twice (for \"" + topicHeldBy + "\" and \"" + name + "\"); one of the"
+                        + " two would drop off the subscription list unnoticed — every participant"
+                        + " needs its own confirmation topic");
+            }
+            String nameHolds = topicByName.putIfAbsent(name, topic);
+            if (nameHolds != null) {
+                throw new IllegalArgumentException(PARTICIPANTS_ENV + " lists the participant \""
+                        + name + "\" twice (on \"" + nameHolds + "\" and \"" + topic + "\"); the"
+                        + " saga would wait for fewer confirmations than there are participants and"
+                        + " announce the purge complete too early — every participant needs one"
+                        + " name and one topic");
+            }
         }
         return byTopic;
     }

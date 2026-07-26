@@ -3,6 +3,8 @@ package com.jrobertgardzinski.offboarding.infrastructure;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -10,8 +12,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Main's boot-time configuration hygiene: a mangled numeric env refuses to boot with a message
- * that names the variable (not a bare NumberFormatException), and the sweeper's stall tolerance
- * is floored at the sweep interval — below it /health would call a healthy sweeper stalled.
+ * that names the variable (not a bare NumberFormatException), the sweeper's stall tolerance is
+ * floored at the sweep interval — below it /health would call a healthy sweeper stalled — and the
+ * participant spec may not name a participant or a topic twice, because either repeat shrinks the
+ * set of confirmations the saga waits for and buys a premature PORTAL_CONTENT_PURGED.
  */
 class MainConfigTest {
 
@@ -192,5 +196,88 @@ class MainConfigTest {
                 Duration.ofSeconds(300)));
         assertEquals(Main.ALIVE_STALL_FLOOR, Main.flooredAliveStall("OFFBOARDING_ALIVE_STALL_SEC",
                 Main.ALIVE_STALL_FLOOR));
+    }
+
+    @Test
+    void the_shipped_participant_spec_parses_into_one_topic_per_participant() {
+        Map<String, String> byTopic = Main.parseParticipants(Main.DEFAULT_PARTICIPANTS);
+        assertEquals(Map.of("memes-events", "memes",
+                        "comments-events", "comments",
+                        "usercollections-events", "collections"), byTopic,
+                "the default spec is the contract the three content services publish on");
+        assertEquals(3, Set.copyOf(byTopic.values()).size(),
+                "and it must survive the values()->Set collapse main() does: three topics, three"
+                        + " DISTINCT names, three confirmations to wait for");
+    }
+
+    @Test
+    void a_participant_entry_that_is_not_name_equals_topic_refuses_to_boot() {
+        for (String nonsense : new String[]{"memes", "memes=", "=memes-events", "memes= "}) {
+            assertThrows(IllegalArgumentException.class, () -> Main.parseParticipants(nonsense),
+                    "must refuse the entry \"" + nonsense + "\"");
+        }
+    }
+
+    @Test
+    void a_repeated_participant_NAME_refuses_to_boot_instead_of_shrinking_the_quorum() {
+        // THE finding this pins. main() derives the set of confirmations to wait for from
+        // participantByTopic.values(), so "memes" twice on two topics collapses to ONE required
+        // confirmation while THREE services still hold the leaver's content. The saga would then
+        // announce PORTAL_CONTENT_PURGED after two confirmations instead of three, security would
+        // delete the account for good, and the participant nobody waited for would have neither a
+        // timeout nor a compensation left to report its own failure. Data gone, verdict false.
+        String typo = "memes=memes-events,memes=other-events,comments=comments-events";
+        IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                () -> Main.parseParticipants(typo));
+        assertTrue(refusal.getMessage().contains(Main.PARTICIPANTS_ENV),
+                "the refusal must name the variable to fix: " + refusal.getMessage());
+        assertTrue(refusal.getMessage().contains("memes"),
+                "and the participant it saw twice: " + refusal.getMessage());
+        assertTrue(refusal.getMessage().contains("memes-events")
+                        && refusal.getMessage().contains("other-events"),
+                "and BOTH topics it saw it on, so the operator knows which line to delete: "
+                        + refusal.getMessage());
+    }
+
+    @Test
+    void a_repeated_TOPIC_refuses_to_boot_instead_of_dropping_a_participant() {
+        // the quieter half of the same typo: two names on one topic used to overwrite the earlier
+        // entry, so that participant simply stopped being subscribed to — no confirmation could
+        // ever arrive from it, and the saga would burn its retries and capitulate for no reason
+        IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                () -> Main.parseParticipants("memes=shared-events,comments=shared-events"));
+        assertTrue(refusal.getMessage().contains(Main.PARTICIPANTS_ENV),
+                "the refusal must name the variable: " + refusal.getMessage());
+        assertTrue(refusal.getMessage().contains("shared-events"),
+                "and echo the topic it saw twice: " + refusal.getMessage());
+        assertTrue(refusal.getMessage().contains("memes")
+                        && refusal.getMessage().contains("comments"),
+                "and both participants that claimed it: " + refusal.getMessage());
+
+        // an entry repeated verbatim is the same refusal: config that says a thing twice is config
+        // whose author lost track, not an invitation to guess which copy was meant
+        assertThrows(IllegalArgumentException.class,
+                () -> Main.parseParticipants("memes=memes-events,memes=memes-events"));
+    }
+
+    @Test
+    void one_participant_may_be_named_after_another_participants_topic_prefix() {
+        // the checks must be about EQUALITY, not about looking alike: a "memes" participant and a
+        // "memes-archive" participant on "memes-archive-events" is a perfectly good deployment,
+        // and a validation that rejected it would block the very extension the config exists for
+        Map<String, String> byTopic = Main.parseParticipants(
+                "memes=memes-events,memes-archive=memes-archive-events");
+        assertEquals(Map.of("memes-events", "memes",
+                "memes-archive-events", "memes-archive"), byTopic);
+    }
+
+    @Test
+    void whitespace_around_the_pairs_is_forgiven_and_an_empty_spec_stays_legal() {
+        assertEquals(Map.of("memes-events", "memes", "comments-events", "comments"),
+                Main.parseParticipants(" memes = memes-events , comments = comments-events "),
+                "a spec pasted from a YAML manifest carries spaces; they are not a typo");
+        assertEquals(Map.of(), Main.parseParticipants(""),
+                "and an empty spec still means what the code says it means: no content"
+                        + " participants at all (dev, tests) — not a refusal");
     }
 }
