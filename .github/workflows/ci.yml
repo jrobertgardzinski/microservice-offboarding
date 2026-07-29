@@ -53,6 +53,45 @@ jobs:
       - name: Build and test (including pact provider verification)
         run: mvn -B --no-transfer-progress -f portal/microservice-offboarding/pom.xml clean verify
 
+      # Does the thing we just built actually START?
+      #
+      # `mvn verify` cannot answer that, and on 2026-07-29 it proved it twice in one afternoon over
+      # in microservice-security. Tests run on the TEST classpath and construct objects by hand; the
+      # service runs on its packaged jar. A dependency declared with a narrower scope vanished from
+      # the runtime libs (NoClassDefFoundError on boot) and a bean with two constructors and no
+      # @Inject made every health endpoint answer 500 — both through entirely green builds.
+      #
+      # No infrastructure needed: with DB_URL unset this service falls back to in-memory H2 (see
+      # Database#config), which is exactly why that fallback exists. What is under test is the
+      # ARTIFACT — that it assembles, wires and answers — not its behaviour, which the suite owns.
+      #
+      # 500 is the failure being watched for: it means the endpoint itself is broken. 200 and 503
+      # are verdicts, and both are acceptable from a service with no broker.
+      - name: Prove the packaged service boots and answers its probes
+        run: |
+          cd portal/microservice-offboarding
+          OFFBOARDING_PORT=18094 java -jar target/microservice-offboarding.jar > /tmp/boot-smoke.log 2>&1 &
+          pid=$!
+          for attempt in $(seq 1 60); do
+            curl -s -o /dev/null http://localhost:18094/alive && break
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "::error::the packaged service died during startup"
+              tail -40 /tmp/boot-smoke.log
+              exit 1
+            fi
+            sleep 2
+          done
+          fail() { echo "::error::$1"; tail -40 /tmp/boot-smoke.log; kill "$pid" 2>/dev/null; exit 1; }
+          for path in /alive /health /metrics; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:18094$path" || echo 000)
+            case "$code" in
+              200|503) echo "$path: $code" ;;
+              *) fail "$path answered $code — the manifest probes it and would never pass" ;;
+            esac
+          done
+          kill "$pid" 2>/dev/null || true
+
+
       # A skipped verification reads green — that is exactly how the security outcome pact went
       # unverified for weeks — so the run says out loud that all four executed interactions.
       - name: Prove the pact verifications actually ran
