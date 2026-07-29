@@ -4,6 +4,15 @@ name: CI
 # repos' committed pacts (the purge command the participants read, the outcome security reads),
 # so the checkouts use the workspace layout. Consumer repos are checkout-only (their pacts/), no
 # build. The reactor CI (in the aggregator repo) still validates everything together.
+#
+# The layout is portal/<repo> and shared/<repo>, not flat, and that matters: the three content
+# participants are portal siblings (`../microservice-memes` and friends) but security lives one
+# level up in the shared kernel (`../../shared/microservice-security`). A flat checkout resolves
+# that second path ABOVE $GITHUB_WORKSPACE, where nothing exists, so until 2026-07-29
+# SecurityOutcomePactProviderTest was @EnabledIf-skipped on every run — the PORTAL_CONTENT_PURGED /
+# PORTAL_PURGE_FAILED envelope EventsRouter.outcome() routes on was verified nowhere in this repo,
+# and the security checkout that was supposed to enable it served no purpose. The four content
+# pacts only worked by accident of the flat layout coinciding with the portal one.
 
 on:
   push:
@@ -17,23 +26,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: microservice-offboarding
+          path: portal/microservice-offboarding
       - uses: actions/checkout@v4
         with:
           repository: jrobertgardzinski/microservice-memes
-          path: microservice-memes
+          path: portal/microservice-memes
       - uses: actions/checkout@v4
         with:
           repository: jrobertgardzinski/microservice-comments
-          path: microservice-comments
+          path: portal/microservice-comments
       - uses: actions/checkout@v4
         with:
           repository: jrobertgardzinski/microservice-user-collections
-          path: microservice-user-collections
+          path: portal/microservice-user-collections
+      # the shared kernel, one level up — see the note at the top
       - uses: actions/checkout@v4
         with:
           repository: jrobertgardzinski/microservice-security
-          path: microservice-security
+          path: shared/microservice-security
       - name: Set up JDK 25
         uses: actions/setup-java@v4
         with:
@@ -41,4 +51,31 @@ jobs:
           java-version: '25'
           cache: maven
       - name: Build and test (including pact provider verification)
-        run: mvn -B --no-transfer-progress -f microservice-offboarding/pom.xml clean verify
+        run: mvn -B --no-transfer-progress -f portal/microservice-offboarding/pom.xml clean verify
+
+      # A skipped verification reads green — that is exactly how the security outcome pact went
+      # unverified for weeks — so the run says out loud that all four executed interactions.
+      - name: Prove the pact verifications actually ran
+        if: always()
+        run: |
+          reports=portal/microservice-offboarding/target/surefire-reports
+          check() {
+            file="$reports/TEST-$1.xml"
+            if [ ! -f "$file" ]; then
+              echo "::error::$1 produced no surefire report — it never ran."
+              ls -1 "$reports" || true
+              exit 1
+            fi
+            cases=$(grep -c '<testcase' "$file" || true)
+            skips=$(grep -c '<skipped' "$file" || true)
+            if [ "$cases" -eq 0 ] || [ "$cases" -eq "$skips" ]; then
+              echo "::error::$1 executed no interaction ($cases case(s), $skips skipped)."
+              echo "The consumer pact is not where @PactFolder looks — check the checkout paths."
+              exit 1
+            fi
+            echo "$1: $cases interaction(s) verified, $skips skipped."
+          }
+          check com.jrobertgardzinski.offboarding.infrastructure.SecurityOutcomePactProviderTest
+          check com.jrobertgardzinski.offboarding.contracts.memes.MemesCommandPactProviderTest
+          check com.jrobertgardzinski.offboarding.contracts.comments.CommentsCommandPactProviderTest
+          check com.jrobertgardzinski.offboarding.contracts.collections.CollectionsCommandPactProviderTest
