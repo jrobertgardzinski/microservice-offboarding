@@ -24,28 +24,28 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: portal/microservice-offboarding
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: jrobertgardzinski/microservice-memes
           path: portal/microservice-memes
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: jrobertgardzinski/microservice-comments
           path: portal/microservice-comments
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: jrobertgardzinski/microservice-user-collections
           path: portal/microservice-user-collections
       # the shared kernel, one level up — see the note at the top
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: jrobertgardzinski/microservice-security
           path: shared/microservice-security
       - name: Set up JDK 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
