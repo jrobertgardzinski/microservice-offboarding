@@ -21,8 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * The extracted saga's opening contract: security announces the FACT that an account requested
  * deletion, and this pact states exactly the fields the orchestrator reads — {@code id} (the
- * replay key), {@code email}, and the optional {@code policy} it ferries to the content services
- * untouched. Proven by driving the REAL router with the pact's payload; verified against
+ * replay key), {@code sagaId} (security's own handle on the deletion, stored with the saga and
+ * echoed by the verdict), {@code email}, and the optional {@code policy} it ferries to the content
+ * services untouched. Proven by driving the REAL router with the pact's payload; verified against
  * security's REAL fact-producing code by its provider tests. Tolerant reader: security may add
  * fields freely.
  */
@@ -37,6 +38,10 @@ class DeletionRequestContractTest {
                 .withContent(new PactDslJsonBody()
                         .stringValue("type", "ACCOUNT_DELETION_REQUESTED")
                         .uuid("id")
+                        // security's own saga id: stored with the portal's saga and echoed by the
+                        // verdict, so security can settle THE request this verdict is about
+                        // instead of matching it to the address
+                        .uuid("sagaId")
                         .stringType("email", "leaver@example.com"))
                 .toPact();
     }
@@ -47,6 +52,10 @@ class DeletionRequestContractTest {
                 .withContent(new PactDslJsonBody()
                         .stringValue("type", "ACCOUNT_DELETION_REQUESTED")
                         .uuid("id")
+                        // security's own saga id: stored with the portal's saga and echoed by the
+                        // verdict, so security can settle THE request this verdict is about
+                        // instead of matching it to the address
+                        .uuid("sagaId")
                         .stringType("email", "leaver@example.com")
                         .object("policy")
                         .stringType("memes", "DELETE")

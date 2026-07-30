@@ -19,6 +19,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.TopicExistsException;
+import org.apache.kafka.common.header.Header;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -32,6 +33,7 @@ import org.testcontainers.utility.DockerImageName;
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.Clock;
@@ -51,6 +53,7 @@ import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -73,7 +76,7 @@ class KafkaLoopIntegrationTest {
 
     @Container
     static final KafkaContainer KAFKA =
-            new KafkaContainer(DockerImageName.parse("apache/kafka:3.9.1"))
+            new KafkaContainer(DockerImageName.parse("apache/kafka:4.3.1"))
                     // join new consumer groups immediately; the default 3s delay only adds flake room
                     .withEnv("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0");
 
@@ -301,8 +304,12 @@ class KafkaLoopIntegrationTest {
             // maxRetries=1 would compensate on the second sweep without ONE re-command on the
             // wire; the delivered-first counter must not move at all
             topicMaxMessageBytes(EventsRouter.COMMANDS_TOPIC, "1");
+            // a 2s purge timeout, not the 5 minutes the other cases use: the deadline is measured
+            // from the last DELIVERED re-command now, so a delivered retry buys the participant a
+            // whole timeout before the sweeper may decide anything again. With 5 minutes this test
+            // would have to wait out five real minutes for the capitulation below
             startLoop(store, facts, Map.of(memesTopic, "memes"), Duration.ofMillis(300),
-                    new SweepOverdue(store, Duration.ofMinutes(5), 1, Duration.ofSeconds(1),
+                    new SweepOverdue(store, Duration.ofSeconds(2), 1, Duration.ofSeconds(1),
                             SweepOverdue.DEFAULT_RETENTION));
 
             Thread.sleep(4_500);   // several sweeps, every re-command bouncing off the broker
@@ -524,7 +531,44 @@ class KafkaLoopIntegrationTest {
         }
     }
 
+    // ------ (i) the sweeper's own trace: what it sends must be greppable, especially on failure
+
+    @Test
+    void a_recommand_from_the_sweeper_carries_a_correlation_id_minted_from_its_saga()
+            throws Exception {
+        String run = run();
+        String email = "sweepcid-" + run + "@example.com";
+        String facts = "security-events-" + run;
+        createTopics(facts, EventsRouter.COMMANDS_TOPIC);
+        // an already-overdue saga, so the first sweep re-commands it. This is the path that used to
+        // go out bare: the consumer propagates the cid of the record it handles, the sweeper had
+        // none to propagate and sent nothing — so a re-command, a capitulation and every
+        // re-announcement were untraceable exactly when an operator is looking for them
+        // start() takes the FACT id and hands back the saga's own id — the one the header names
+        UUID sagaId = store.start(UUID.randomUUID(), email, Instant.now().minusSeconds(600));
+
+        startLoop(store, facts, Map.of(), Duration.ofMillis(300),
+                new SweepOverdue(store, Duration.ofMinutes(5)));
+
+        ConsumerRecord<String, String> recommand = readMatchingRecords(
+                EventsRouter.COMMANDS_TOPIC, Set.of(email), 1, GENEROUS, Duration.ZERO).getFirst();
+
+        String cid = cidHeader(recommand);
+        assertNotNull(cid, "a sweeper re-command must carry " + KafkaLoop.CID_HEADER
+                + ": without it the trace dies on the failure path");
+        assertEquals("saga-" + sagaId.toString().substring(0, 8), cid,
+                "the id names the SAGA, so a re-announcement repeats it and no address leaks"
+                        + " into the header");
+        assertFalse(cid.contains(email), "the correlation id must never carry personal data");
+    }
+
     // ---------------------------------------------------------------------------- the wiring
+
+    /** The correlation id of a record, or null — headers are bytes, and absence is meaningful. */
+    private static String cidHeader(ConsumerRecord<String, String> record) {
+        Header header = record.headers().lastHeader(KafkaLoop.CID_HEADER);
+        return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);
+    }
 
     private KafkaLoop startLoop(SagaStore sagaStore, String factsTopic,
                                 Map<String, String> participantByTopic, Duration sweepEvery,
@@ -591,6 +635,21 @@ class KafkaLoopIntegrationTest {
      */
     private static List<JsonNode> readMatching(String topic, Set<String> emails, int atLeast,
                                                Duration timeout, Duration settle) throws Exception {
+        List<JsonNode> events = new ArrayList<>();
+        for (ConsumerRecord<String, String> record
+                : readMatchingRecords(topic, emails, atLeast, timeout, settle)) {
+            events.add(MAPPER.readTree(record.value()));
+        }
+        return events;
+    }
+
+    /**
+     * The same read, but handing back the RECORDS — the only way to assert on headers (the
+     * correlation id rides there, not in the payload).
+     */
+    private static List<ConsumerRecord<String, String>> readMatchingRecords(
+            String topic, Set<String> emails, int atLeast, Duration timeout, Duration settle)
+            throws Exception {
         Properties props = new Properties();
         props.put("bootstrap.servers", KAFKA.getBootstrapServers());
         props.put("group.id", "probe-" + UUID.randomUUID());
@@ -598,7 +657,7 @@ class KafkaLoopIntegrationTest {
         props.put("auto.offset.reset", "earliest");
         props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
         props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-        List<JsonNode> matches = new ArrayList<>();
+        List<ConsumerRecord<String, String>> matches = new ArrayList<>();
         long deadline = System.currentTimeMillis() + timeout.toMillis();
         try (KafkaConsumer<String, String> probe = new KafkaConsumer<>(props)) {
             List<TopicPartition> partitions = probe.partitionsFor(topic).stream()
@@ -612,7 +671,7 @@ class KafkaLoopIntegrationTest {
                 for (ConsumerRecord<String, String> record : probe.poll(Duration.ofMillis(200))) {
                     JsonNode event = MAPPER.readTree(record.value());
                     if (emails.contains(event.path("email").asText())) {
-                        matches.add(event);
+                        matches.add(record);
                         settledAt = Long.MAX_VALUE;   // a new match restarts the settle window
                     }
                 }
@@ -717,17 +776,17 @@ class KafkaLoopIntegrationTest {
         }
 
         @Override
-        public UUID start(UUID factId, String email, String policy, Instant at) {
+        public UUID start(Opening opening, Instant at) {
             if (failures.get() > 0) {
                 failures.decrementAndGet();
                 throw new IllegalStateException("simulated database outage");
             }
-            return inner.start(factId, email, policy, at);
+            return inner.start(opening, at);
         }
 
         @Override
-        public java.util.Optional<UUID> confirm(String email, UUID sagaId, String participant,
-                                                Set<String> required, Instant at) {
+        public java.util.Optional<Recorded> confirm(String email, UUID sagaId, String participant,
+                                                    Set<String> required, Instant at) {
             return inner.confirm(email, sagaId, participant, required, at);
         }
 
@@ -742,8 +801,8 @@ class KafkaLoopIntegrationTest {
         }
 
         @Override
-        public boolean retryDelivered(UUID sagaId) {
-            return inner.retryDelivered(sagaId);
+        public boolean retryDelivered(UUID sagaId, Instant at) {
+            return inner.retryDelivered(sagaId, at);
         }
 
         @Override

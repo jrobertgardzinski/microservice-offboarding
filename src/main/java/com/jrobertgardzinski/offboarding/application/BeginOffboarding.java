@@ -12,8 +12,15 @@ import java.util.UUID;
  */
 public class BeginOffboarding {
 
-    /** What begin decided: the saga to command under, and whether there is nobody to command. */
-    public record Begun(UUID sagaId, boolean completedImmediately) {
+    /**
+     * What begin decided. {@code nothingToPurge} says there is nobody to command — the portal is
+     * clean by configuration. {@code completedNow} is the once-latch's answer: true only when THIS
+     * call turned the saga COMPLETED, so only this call may announce the outcome. The two differ
+     * on a replayed fact for a portal without participants: there is still nothing to purge, but
+     * the saga finished long ago and announcing again would put a second verdict on the wire (only
+     * the deterministic outcome id keeps consumers from acting on it twice).
+     */
+    public record Begun(UUID sagaId, boolean nothingToPurge, boolean completedNow) {
     }
 
     private final SagaStore sagas;
@@ -28,17 +35,24 @@ public class BeginOffboarding {
         return execute(factId, email, null, at);
     }
 
+    public Begun execute(UUID factId, String email, String policy, Instant at) {
+        return execute(factId, email, policy, null, at);
+    }
+
     /**
      * {@code policy} is the leaver's choices off the fact — an opaque JSON object, stored with
      * the saga so the sweeper's re-command can repeat the original command instead of sending the
-     * participants back to their defaults.
+     * participants back to their defaults. {@code securitySagaId} is security's own handle on the
+     * deletion, stored so the verdict can echo it back to the saga that is waiting for it. The
+     * participant set is stored WITH the saga: it is the quorum this case must reach, and
+     * re-configuring the participants must not change the criterion for cases already open.
      */
-    public Begun execute(UUID factId, String email, String policy, Instant at) {
-        UUID sagaId = sagas.start(factId, email, policy, at);
+    public Begun execute(UUID factId, String email, String policy, UUID securitySagaId, Instant at) {
+        UUID sagaId = sagas.start(
+                new SagaStore.Opening(factId, email, policy, securitySagaId, participants), at);
         if (participants.isEmpty()) {
-            sagas.complete(email, at);
-            return new Begun(sagaId, true);
+            return new Begun(sagaId, true, sagas.complete(email, at));
         }
-        return new Begun(sagaId, false);
+        return new Begun(sagaId, false, false);
     }
 }

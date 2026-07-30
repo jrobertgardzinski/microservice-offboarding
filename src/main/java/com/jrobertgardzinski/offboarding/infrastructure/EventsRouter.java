@@ -135,7 +135,8 @@ public class EventsRouter {
         for (SagaStore.Compensated failed : swept.compensated()) {
             LOG.warn("portal purge overdue for {} despite the retries; announcing the failure "
                     + "(saga {}, already purged: {})", masked(failed.email()), failed.sagaId(), failed.confirmed());
-            out.add(outcome("PORTAL_PURGE_FAILED", failed.email(), failed.sagaId(), failed.confirmed()));
+            out.add(outcome("PORTAL_PURGE_FAILED", failed.email(), failed.sagaId(),
+                    failed.securitySagaId(), failed.confirmed()));
         }
         if (!swept.compensated().isEmpty()) {
             MetricsEndpoint.compensated(swept.compensated().size());
@@ -144,8 +145,10 @@ public class EventsRouter {
             LOG.info("re-announcing the {} outcome for {} (saga {}): the first announcement "
                     + "never reached the broker", pending.state(), masked(pending.email()), pending.sagaId());
             out.add("COMPLETED".equals(pending.state())
-                    ? outcome("PORTAL_CONTENT_PURGED", pending.email(), pending.sagaId(), null)
-                    : outcome("PORTAL_PURGE_FAILED", pending.email(), pending.sagaId(), pending.confirmed()));
+                    ? outcome("PORTAL_CONTENT_PURGED", pending.email(), pending.sagaId(),
+                    pending.securitySagaId(), null)
+                    : outcome("PORTAL_PURGE_FAILED", pending.email(), pending.sagaId(),
+                    pending.securitySagaId(), pending.confirmed()));
         }
         return out;
     }
@@ -166,6 +169,24 @@ public class EventsRouter {
             LOG.warn("dropping deletion fact with a missing or invalid id: {}", summarised(fact));
             return List.of();
         }
+        // security's own handle on the deletion, stored with the saga and ECHOED by the verdict:
+        // without it security can only match the verdict by email address, and a late verdict of
+        // a closed case then compensates a NEWER deletion for the same address. Absent means an
+        // older producer — the saga opens without a handle, as every saga did before this field.
+        // Present-but-mangled drops like the fact's own id: the deletion cannot be correlated, so
+        // purging the content would risk a verdict nobody can match (content erased, account
+        // restored), and security's own timeout still unlocks the account
+        UUID securitySagaId = null;
+        if (fact.has("sagaId")) {
+            String raw = fact.get("sagaId").asText();
+            try {
+                securitySagaId = UUID.fromString(raw);
+            } catch (IllegalArgumentException mangled) {
+                LOG.warn("dropping deletion fact with an unparseable sagaId \"{}\": {}",
+                        raw, summarised(fact));
+                return List.of();
+            }
+        }
         // the policy is stored with the saga (verbatim, only when it is the object the command
         // would carry) so the sweeper's re-command can repeat the original command — capped at
         // MAX_POLICY_BYTES: an oversized blob is dropped from the saga AND the command alike
@@ -183,10 +204,21 @@ public class EventsRouter {
             policy = null;
             storedPolicy = null;
         }
-        BeginOffboarding.Begun begun = begin.execute(factId, email, storedPolicy, Instant.now(clock));
-        if (begun.completedImmediately()) {
+        BeginOffboarding.Begun begun =
+                begin.execute(factId, email, storedPolicy, securitySagaId, Instant.now(clock));
+        if (begun.nothingToPurge()) {
+            if (!begun.completedNow()) {
+                // the once-latch said no: this fact is a replay and the saga finished long ago.
+                // Announcing again would put a second verdict on the wire for a settled case —
+                // whatever it still owes is the outbox's business (unannouncedOutcomes), not this
+                // fact's
+                LOG.info("replayed deletion fact for {}: nothing to purge and the saga is already"
+                        + " finished; no second announcement (saga {})", masked(email), begun.sagaId());
+                return List.of();
+            }
             LOG.info("no content participants configured; portal instantly clean for {}", masked(email));
-            return List.of(outcome("PORTAL_CONTENT_PURGED", email, begun.sagaId(), null));
+            return List.of(outcome("PORTAL_CONTENT_PURGED", email, begun.sagaId(),
+                    securitySagaId, null));
         }
         LOG.info("commanding the content purge for {} (saga {})", masked(email), begun.sagaId());
         return List.of(purgeCommand(begun.sagaId(), email, policy));
@@ -218,14 +250,26 @@ public class EventsRouter {
                 return List.of();
             }
         }
-        Optional<UUID> completed = confirm.execute(email, sagaId, participant, Instant.now(clock));
-        if (completed.isEmpty()) {
+        Optional<SagaStore.Recorded> landed =
+                confirm.execute(email, sagaId, participant, Instant.now(clock));
+        // two outcomes that used to share one line, and they are not the same event: a stray
+        // recorded NOTHING (no saga is waiting for it — a closed case, or an account with no
+        // deletion under way), while a recorded confirmation is progress. Logging both as
+        // "recorded ... saga not complete yet" told an operator chasing a stuck deletion that the
+        // confirmation had been stored, when it had been dropped
+        if (landed.isEmpty()) {
+            LOG.info("dropping stray {} purge confirmation for {}: no saga is waiting for it",
+                    participant, masked(email));
+            return List.of();
+        }
+        if (!landed.get().completedSaga()) {
             LOG.info("recorded {} purge confirmation for {}; saga not complete yet",
                     participant, masked(email));
             return List.of();
         }
         LOG.info("all participants confirmed for {}; announcing the portal purged", masked(email));
-        return List.of(outcome("PORTAL_CONTENT_PURGED", email, completed.get(), null));
+        return List.of(outcome("PORTAL_CONTENT_PURGED", email, landed.get().sagaId(),
+                landed.get().securitySagaId(), null));
     }
 
     private Outgoing purgeCommand(UUID sagaId, String email, JsonNode policy) {
@@ -272,7 +316,18 @@ public class EventsRouter {
         return write(command);
     }
 
-    private Outgoing outcome(String type, String email, UUID sagaId, java.util.Set<String> confirmed) {
+    /**
+     * The single verdict security waits for. {@code securitySagaId} is SECURITY's handle, echoed
+     * from the fact that opened this case (null for a saga that never got one) — the correlation
+     * that lets security settle THE deletion this verdict is about instead of matching by email
+     * address, where a late verdict of a closed case compensates a newer request for the same
+     * person. The field is spelled {@code sagaId} on the wire, exactly as on the fact: on this
+     * boundary that name means "the saga in SECURITY's terms", while on the participants'
+     * boundary (the purge command and its confirmation) it means the portal's own. Additive
+     * within envelope version 1 (workspace ADR 0004).
+     */
+    private Outgoing outcome(String type, String email, UUID sagaId, UUID securitySagaId,
+                             java.util.Set<String> confirmed) {
         ObjectNode node = mapper.createObjectNode()
                 // the id is DERIVED from (saga, type), never random: the sweeper may re-publish
                 // an outcome the first announcement of which was lost, and a re-publication must
@@ -282,6 +337,9 @@ public class EventsRouter {
                 .put("type", type)
                 .put("email", email)
                 .put("version", 1);
+        if (securitySagaId != null) {
+            node.put("sagaId", securitySagaId.toString());
+        }
         if (confirmed != null) {
             // the partial-purge disclosure: which participants DID purge before the failure —
             // sorted, keeping replays of the same outcome byte-identical here too

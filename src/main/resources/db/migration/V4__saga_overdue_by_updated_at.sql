@@ -1,0 +1,15 @@
+-- The overdue sweep changes its clock: from created_at (the saga's BIRTH) to updated_at (the last
+-- time the participant was actually asked, stamped by retryDelivered). Measured from birth, a saga
+-- past the deadline came back as a retry candidate on EVERY sweep pass — three retries inside three
+-- 15s intervals — so the failure verdict went out roughly 45s after the deadline while the last
+-- re-command still had a live retry budget at the participant. The purge then ran AFTER the portal
+-- had announced it failed: security unlocked the account and mailed an apology, and the content
+-- disappeared anyway. Measured from updated_at, the next decision (another retry, or capitulation)
+-- cannot happen before a whole purge timeout has passed since the participant was last asked, so
+-- the participant's budget is always spent before the verdict.
+--
+-- The index follows the query, exactly as V1's did for the old one. Plain, not partial: H2 in
+-- PostgreSQL mode runs these same migrations for the dev profile and the tests, and it has no
+-- partial indexes (see V1). The old (state, created_at) index stays — created_at is still the
+-- saga's birth for retention and for humans reading the table.
+CREATE INDEX idx_offboarding_state_updated ON offboarding_sagas (state, updated_at);

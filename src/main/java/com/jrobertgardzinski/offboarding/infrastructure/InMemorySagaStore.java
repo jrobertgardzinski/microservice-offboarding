@@ -29,16 +29,26 @@ public class InMemorySagaStore implements SagaStore {
         public int retries;
         /** The leaver's choices as stored at start — verbatim JSON, or null (see V3). */
         public final String policy;
+        /** Security's handle on the deletion, echoed by the verdict — null when none (see V5). */
+        public UUID securitySagaId;
+        /** The quorum this saga opened with, or null when none was recorded (see V6). */
+        public final Set<String> requiredParticipants;
 
-        Saga(UUID factId, String email, String policy, Instant createdAt) {
-            this(UUID.randomUUID(), factId, email, policy, createdAt);
+        Saga(UUID factId, String email, String policy, UUID securitySagaId,
+             Set<String> requiredParticipants, Instant createdAt) {
+            this(UUID.randomUUID(), factId, email, policy, securitySagaId, requiredParticipants,
+                    createdAt);
         }
 
-        Saga(UUID id, UUID factId, String email, String policy, Instant createdAt) {
+        Saga(UUID id, UUID factId, String email, String policy, UUID securitySagaId,
+             Set<String> requiredParticipants, Instant createdAt) {
             this.id = id;
             this.factId = factId;
             this.email = email;
             this.policy = policy;
+            this.securitySagaId = securitySagaId;
+            this.requiredParticipants = requiredParticipants == null
+                    ? null : Set.copyOf(requiredParticipants);
             this.createdAt = createdAt;
             this.updatedAt = createdAt;
         }
@@ -51,35 +61,48 @@ public class InMemorySagaStore implements SagaStore {
     private final Map<UUID, Saga> sagas = new LinkedHashMap<>();
 
     @Override
-    public UUID start(UUID factId, String email, String policy, Instant at) {
-        return sagas.values().stream()
-                .filter(saga -> saga.factId.equals(factId)).findFirst()
-                .or(() -> running(email))
-                .map(saga -> saga.id)
-                .orElseGet(() -> {
-                    Saga saga = new Saga(factId, email, policy, at);
-                    sagas.put(saga.id, saga);
-                    return saga.id;
-                });
+    public UUID start(Opening opening, Instant at) {
+        Optional<Saga> replayed = sagas.values().stream()
+                .filter(saga -> saga.factId.equals(opening.factId())).findFirst();
+        if (replayed.isPresent()) {
+            return replayed.get().id;
+        }
+        Optional<Saga> running = running(opening.email());
+        if (running.isPresent()) {
+            // a joining fact hands the running saga the handle of the security saga now waiting —
+            // mirrors the JDBC adapter, including leaving it alone when the fact carried none
+            if (opening.securitySagaId() != null) {
+                running.get().securitySagaId = opening.securitySagaId();
+            }
+            return running.get().id;
+        }
+        Saga saga = new Saga(opening.factId(), opening.email(), opening.policy(),
+                opening.securitySagaId(), opening.participants(), at);
+        sagas.put(saga.id, saga);
+        return saga.id;
     }
 
     @Override
-    public Optional<UUID> confirm(String email, UUID sagaId, String participant, Set<String> required,
-                                  Instant at) {
+    public Optional<Recorded> confirm(String email, UUID sagaId, String participant,
+                                      Set<String> required, Instant at) {
         // the saga id, when echoed, is the precise address AND the final word: a stale id (the
         // saga no longer STARTED) is a stray from a closed case, never an email fallback — the
         // fallback exists solely for confirmations without the field. Mirrors the JDBC adapter.
         Optional<Saga> target = sagaId != null
                 ? Optional.ofNullable(sagas.get(sagaId)).filter(saga -> "STARTED".equals(saga.state))
                 : running(email);
-        return target.flatMap(saga -> {
+        return target.map(saga -> {
             saga.confirmed.add(participant);
-            if (saga.confirmed.containsAll(required)) {
+            // the quorum the saga opened with wins over the caller's configuration whenever it
+            // recorded one — mirrors the JDBC adapter
+            Set<String> quorum = saga.requiredParticipants == null
+                    ? required : saga.requiredParticipants;
+            if (saga.confirmed.containsAll(quorum)) {
                 saga.state = "COMPLETED";   // the once-latch: running() no longer finds it
                 saga.updatedAt = at;
-                return Optional.of(saga.id);
+                return new Recorded(saga.id, saga.securitySagaId, true);
             }
-            return Optional.empty();
+            return new Recorded(saga.id, saga.securitySagaId, false);
         });
     }
 
@@ -97,7 +120,9 @@ public class InMemorySagaStore implements SagaStore {
         List<Retry> retries = new ArrayList<>();
         List<Compensated> compensated = new ArrayList<>();
         for (Saga saga : sagas.values()) {
-            if ("STARTED".equals(saga.state) && saga.createdAt.isBefore(cutoff)) {
+            // updatedAt, not createdAt: the deadline runs from the last delivered re-command —
+            // mirrors the JDBC adapter (see SagaStore#sweepOverdue for why birth was wrong)
+            if ("STARTED".equals(saga.state) && saga.updatedAt.isBefore(cutoff)) {
                 if (saga.retries < maxRetries) {
                     // a candidate, not a charge: retryDelivered() moves the counter once the
                     // re-command reached the broker — mirrors the JDBC adapter. The stored
@@ -106,7 +131,8 @@ public class InMemorySagaStore implements SagaStore {
                 } else {
                     saga.state = "COMPENSATED";
                     saga.updatedAt = at;
-                    compensated.add(new Compensated(saga.id, saga.email, Set.copyOf(saga.confirmed)));
+                    compensated.add(new Compensated(saga.id, saga.email, Set.copyOf(saga.confirmed),
+                            saga.securitySagaId));
                 }
             }
         }
@@ -114,13 +140,13 @@ public class InMemorySagaStore implements SagaStore {
     }
 
     @Override
-    public boolean retryDelivered(UUID sagaId) {
+    public boolean retryDelivered(UUID sagaId, Instant at) {
         Saga saga = sagas.get(sagaId);
         if (saga != null && "STARTED".equals(saga.state)) {
             saga.retries++;
-            // the delivery just happened, so wall clock — mirrors the JDBC adapter's
-            // CURRENT_TIMESTAMP; harmless to the finished states' age guards (STARTED only)
-            saga.updatedAt = Instant.now();
+            // the stamp that gives the participant its budget: the sweep's overdue clock restarts
+            // here — mirrors the JDBC adapter, the caller's instant in both
+            saga.updatedAt = at;
             return true;   // charged — mirrors the JDBC adapter's updated-row count
         }
         return false;      // the no-op on a finished or unknown saga: nothing to meter
@@ -139,7 +165,8 @@ public class InMemorySagaStore implements SagaStore {
         return sagas.values().stream()
                 .filter(saga -> saga.finished() && !saga.announced && saga.updatedAt.isBefore(olderThan))
                 .map(saga -> new PendingOutcome(saga.id, saga.email, saga.state,
-                        "COMPENSATED".equals(saga.state) ? Set.copyOf(saga.confirmed) : Set.<String>of()))
+                        "COMPENSATED".equals(saga.state) ? Set.copyOf(saga.confirmed) : Set.<String>of(),
+                        saga.securitySagaId))
                 .toList();
     }
 
@@ -159,7 +186,12 @@ public class InMemorySagaStore implements SagaStore {
      * a stray by design; see the JDBC adapter's confirm()).
      */
     UUID startWithId(UUID sagaId, UUID factId, String email, Instant at) {
-        Saga saga = new Saga(sagaId, factId, email, null, at);
+        return startWithId(sagaId, factId, email, null, at);
+    }
+
+    /** The same seeding, with security's handle on the deletion — for the verdict-echo tests. */
+    UUID startWithId(UUID sagaId, UUID factId, String email, UUID securitySagaId, Instant at) {
+        Saga saga = new Saga(sagaId, factId, email, null, securitySagaId, null, at);
         sagas.put(saga.id, saga);
         return saga.id;
     }

@@ -209,9 +209,11 @@ public class OffboardingSteps {
     @Given("the purge deadline passed and every retry was exhausted")
     @When("the purge deadline passes and every retry is exhausted")
     public void deadlinePassesAndRetriesRunOut() {
-        now = now.plus(TIMEOUT).plusSeconds(1);
-        // one sweep per retry, plus the sweep that finally capitulates
+        // one deadline per retry, plus the one that finally capitulates: each DELIVERED re-command
+        // buys the participant another whole timeout, so exhausting the budget takes
+        // (retries + 1) x TIMEOUT of silence — not (retries + 1) sweeps of the same instant
         for (int sweep = 0; sweep <= SweepOverdue.DEFAULT_MAX_RETRIES; sweep++) {
+            now = now.plus(TIMEOUT).plusSeconds(1);
             announced.addAll(sweepWithDeliveredRetries());
         }
     }
@@ -240,7 +242,7 @@ public class OffboardingSteps {
         swept.stream()
                 .map(EventsRouter.Outgoing::countsRetryFor)
                 .filter(java.util.Objects::nonNull)
-                .forEach(store::retryDelivered);
+                .forEach(saga -> store.retryDelivered(saga, now));
         return swept;
     }
 

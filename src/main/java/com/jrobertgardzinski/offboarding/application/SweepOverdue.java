@@ -8,7 +8,11 @@ import java.util.List;
  * The sweeper's whole pass, three duties in one sweep. (1) The timeout path with a second wind:
  * an overdue saga is re-commanded up to {@code maxRetries} times — the participants are
  * idempotent, so retrying is free — and only then compensated, for the caller to announce the
- * failure. A retry counts only once its re-command was DELIVERED (the caller reports it via
+ * failure. {@code purgeTimeout} is the silence allowed since the participant was last ASKED (the
+ * store measures it from the last delivered command, see {@link SagaStore#sweepOverdue}), so the
+ * whole case may take {@code purgeTimeout x (maxRetries + 1)} before the failure is announced —
+ * long enough that every re-command's own retry budget at the participant has expired first.
+ * A retry counts only once its re-command was DELIVERED (the caller reports it via
  * {@link SagaStore#retryDelivered}); an unreachable broker therefore burns no retries and can
  * never make the saga capitulate without a single command on the wire. (2) The outbox backlog: finished sagas whose outcome never got its announced mark are
  * handed back for re-publication — aged past {@code republishAfter} so outcomes merely in flight

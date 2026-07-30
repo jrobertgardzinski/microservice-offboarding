@@ -1,0 +1,14 @@
+-- The quorum a saga must reach, recorded WITH the saga. It used to be read from configuration
+-- (OFFBOARDING_PARTICIPANTS) on every single confirmation, which means changing that variable and
+-- restarting redefined completeness for sagas ALREADY OPEN: shortening the list closed a case whose
+-- missing participant had been commanded and never answered (verdict "purged", content still there),
+-- and lengthening it made a case wait for a participant that never received a command until the
+-- retries ran out and the purge was declared failed. Neither is a property of the leaver's request;
+-- both were a property of when the operator restarted the pod.
+--
+-- Comma-separated names, the same shape the configuration itself uses (name=topic pairs split on
+-- commas, so a name can never contain one). NULL means "this saga recorded no quorum" — every row
+-- from before this migration — and those keep deferring to the configured set, which is the honest
+-- answer for a case opened when nothing else was known. An EMPTY string is different and meaningful:
+-- a saga opened by a deployment with no content participants at all.
+ALTER TABLE offboarding_sagas ADD COLUMN required_participants TEXT;

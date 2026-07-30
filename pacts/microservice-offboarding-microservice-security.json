@@ -7,12 +7,16 @@
       "contents": {
         "email": "leaver@example.com",
         "id": "e2490de5-5bd3-43d5-b7c4-526e33f71304",
+        "sagaId": "e2490de5-5bd3-43d5-b7c4-526e33f71304",
         "type": "ACCOUNT_DELETION_REQUESTED"
       },
       "description": "an account deletion requested fact",
       "generators": {
         "body": {
           "$.id": {
+            "type": "Uuid"
+          },
+          "$.sagaId": {
             "type": "Uuid"
           }
         }
@@ -35,6 +39,15 @@
                 "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
               }
             ]
+          },
+          "$.sagaId": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+              }
+            ]
           }
         }
       },
@@ -50,12 +63,16 @@
           "comments": "ANONYMIZE_AUTHOR",
           "memes": "DELETE"
         },
+        "sagaId": "e2490de5-5bd3-43d5-b7c4-526e33f71304",
         "type": "ACCOUNT_DELETION_REQUESTED"
       },
       "description": "an account deletion requested fact with policy choices",
       "generators": {
         "body": {
           "$.id": {
+            "type": "Uuid"
+          },
+          "$.sagaId": {
             "type": "Uuid"
           }
         }
@@ -92,6 +109,15 @@
             "matchers": [
               {
                 "match": "type"
+              }
+            ]
+          },
+          "$.sagaId": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
               }
             ]
           }

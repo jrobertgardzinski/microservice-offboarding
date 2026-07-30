@@ -144,6 +144,12 @@ public final class Main {
         String factsTopic = System.getenv().getOrDefault("OFFBOARDING_FACTS_TOPIC", "security-events");
         Map<String, String> participantByTopic = parseParticipants(
                 System.getenv().getOrDefault(PARTICIPANTS_ENV, DEFAULT_PARTICIPANTS));
+        // how long a participant may stay silent after it was ASKED — measured from the last
+        // command it actually received (the first one, or the last delivered re-command), not from
+        // the saga's birth. So the WHOLE case can take purgeTimeout x (retries + 1) before the
+        // failure is announced: 120s x 4 = 8 minutes with the defaults. That is deliberate: the
+        // participants' own retry budget is 90s per command, and announcing the failure before it
+        // expires would let the purge run AFTER the account was restored and apologised for
         Duration purgeTimeout = Duration.ofSeconds(
                 longEnv("OFFBOARDING_PURGE_TIMEOUT_SEC", 120, 1, Long.MAX_VALUE));
         int maxPurgeRetries = (int) longEnv("OFFBOARDING_MAX_PURGE_RETRIES",

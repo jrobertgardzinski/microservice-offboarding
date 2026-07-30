@@ -1,0 +1,14 @@
+-- Security's own handle on the deletion, carried by the ACCOUNT_DELETION_REQUESTED fact and — until
+-- now — thrown away on arrival. The portal read only id/email/policy off the fact, so its verdict
+-- (PORTAL_CONTENT_PURGED / PORTAL_PURGE_FAILED) named no deletion request at all and security had to
+-- match it BY EMAIL ADDRESS. A verdict of a closed case that reached security late therefore settled
+-- whatever deletion happened to be running for that address: a re-announced PORTAL_PURGE_FAILED of
+-- an abandoned case compensated a NEWER request, unlocking the account exactly while the newer purge
+-- was erasing the content.
+--
+-- Stored here (not derived) because the verdict is often announced long after the fact is gone from
+-- the topic — by the sweeper, from this row alone. NULL for every saga opened before this migration
+-- and for any fact that carries no handle; such a verdict simply goes out without the echo, as all
+-- of them did before. Adding the field to the envelope is additive evolution within version 1
+-- (workspace ADR 0004).
+ALTER TABLE offboarding_sagas ADD COLUMN security_saga_id UUID;

@@ -39,6 +39,8 @@ class JdbcSagaStoreTest {
     private static final Instant T0 = Instant.parse("2026-07-11T12:00:00Z");
     /** maxRetries=0: compensate on the first overdue sweep, the pre-retry behaviour. */
     private static final int NO_RETRIES = 0;
+    /** The deployed purge timeout (OFFBOARDING_PURGE_TIMEOUT_SEC, 120s) — the sweep's window. */
+    private static final long TIMEOUT = 120;
 
     private final DataSource dataSource = Database.migratedDataSource();
     private final JdbcSagaStore store = new JdbcSagaStore(dataSource);
@@ -126,22 +128,116 @@ class JdbcSagaStoreTest {
     @Test
     void only_the_last_required_confirmation_completes_and_only_once() {
         store.start(UUID.randomUUID(), "alice@example.com", T0);
-        assertTrue(store.confirm("alice@example.com", null, "memes", THREE, T0).isEmpty());
-        assertTrue(store.confirm("alice@example.com", null, "memes", THREE, T0).isEmpty(),
+        assertFalse(completes(store.confirm("alice@example.com", null, "memes", THREE, T0)));
+        assertFalse(completes(store.confirm("alice@example.com", null, "memes", THREE, T0)),
                 "duplicate is a no-op");
-        assertTrue(store.confirm("alice@example.com", null, "comments", THREE, T0).isEmpty());
-        assertTrue(store.confirm("alice@example.com", null, "collections", THREE, T0).isPresent(),
+        assertFalse(completes(store.confirm("alice@example.com", null, "comments", THREE, T0)));
+        assertTrue(completes(store.confirm("alice@example.com", null, "collections", THREE, T0)),
                 "the last one completes");
         assertTrue(store.confirm("alice@example.com", null, "collections", THREE, T0).isEmpty(),
-                "the once-latch: completion is reported to exactly one caller");
+                "the once-latch: completion is reported to exactly one caller — and the saga is"
+                        + " no longer STARTED, so this echo is a stray that records nothing");
+    }
+
+    /** Did this confirmation complete the saga? Empty means a stray: it landed nowhere. */
+    private static boolean completes(java.util.Optional<SagaStore.Recorded> landed) {
+        return landed.map(SagaStore.Recorded::completedSaga).orElse(false);
+    }
+
+    @Test
+    void a_recorded_confirmation_is_distinguishable_from_a_stray() {
+        // the two used to be one answer (Optional.empty) and the router logged both as "recorded
+        // ... not complete yet", telling an operator that a dropped confirmation had been stored
+        store.start(UUID.randomUUID(), "alice@example.com", T0);
+        SagaStore.Recorded recorded =
+                store.confirm("alice@example.com", null, "memes", THREE, T0).orElseThrow();
+        assertFalse(recorded.completedSaga(), "recorded, and the saga still owes two");
+        assertTrue(store.confirm("nobody@example.com", null, "memes", THREE, T0).isEmpty(),
+                "a stray landed on nothing at all — a different event, and a different log line");
     }
 
     @Test
     void a_confirmation_addressed_by_saga_id_lands_on_that_saga() {
         UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
         assertEquals(saga,
-                store.confirm("alice@example.com", saga, "memes", Set.of("memes"), T0).orElseThrow(),
+                store.confirm("alice@example.com", saga, "memes", Set.of("memes"), T0)
+                        .orElseThrow().sagaId(),
                 "the echoed saga id is the precise address");
+    }
+
+    @Test
+    void the_quorum_recorded_at_start_survives_a_reconfiguration() {
+        // the saga opened when three participants were configured; the operator then shortened
+        // OFFBOARDING_PARTICIPANTS and restarted. Reading the CURRENT configuration on every
+        // confirmation would close this case on the first answer — announcing PORTAL_CONTENT_PURGED
+        // while the content of two services the saga did command is still there
+        UUID saga = store.start(new SagaStore.Opening(UUID.randomUUID(), "alice@example.com",
+                null, null, THREE), T0);
+        assertFalse(completes(store.confirm("alice@example.com", saga, "memes", Set.of("memes"), T0)),
+                "the quorum is the one this saga opened with, not the one configured now");
+        assertFalse(completes(store.confirm("alice@example.com", saga, "comments", Set.of("memes"), T0)));
+        assertTrue(completes(store.confirm("alice@example.com", saga, "collections", Set.of("memes"), T0)),
+                "and it completes when THAT quorum is reached");
+    }
+
+    @Test
+    void a_lengthened_participant_list_does_not_hold_an_open_saga_hostage() {
+        // the mirror image: the saga was commanded to ONE participant, and a later configuration
+        // added two. Waiting for services that never received a command would make this deletion
+        // fail on a timeout instead of completing
+        UUID saga = store.start(new SagaStore.Opening(UUID.randomUUID(), "alice@example.com",
+                null, null, Set.of("memes")), T0);
+        assertTrue(completes(store.confirm("alice@example.com", saga, "memes", THREE, T0)),
+                "the only participant that was ever asked is the whole quorum");
+    }
+
+    @Test
+    void a_saga_that_recorded_no_quorum_falls_back_to_the_configured_one() {
+        // every row from before the column existed: the configured set is the honest answer
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        assertFalse(completes(store.confirm("alice@example.com", saga, "memes", THREE, T0)));
+        store.confirm("alice@example.com", saga, "comments", THREE, T0);
+        assertTrue(completes(store.confirm("alice@example.com", saga, "collections", THREE, T0)));
+    }
+
+    @Test
+    void the_security_handle_is_stored_at_start_and_handed_back_with_every_verdict() {
+        // the correlation the verdict echoes: without it security matches verdicts by email
+        // address, and a late verdict of a closed case settles a NEWER deletion for the same person
+        UUID securitySaga = UUID.randomUUID();
+        UUID saga = store.start(new SagaStore.Opening(UUID.randomUUID(), "alice@example.com",
+                null, securitySaga, Set.of("memes", "comments")), T0);
+
+        assertEquals(securitySaga,
+                store.confirm("alice@example.com", saga, "memes", THREE, T0)
+                        .orElseThrow().securitySagaId(),
+                "a confirmation hands back the handle the (possible) verdict must echo");
+
+        SagaStore.SweepResult swept =
+                store.sweepOverdue(T0.plusSeconds(TIMEOUT), NO_RETRIES, T0.plusSeconds(TIMEOUT + 1));
+        assertEquals(List.of(new SagaStore.Compensated(saga, "alice@example.com", Set.of("memes"),
+                        securitySaga)), swept.compensated(),
+                "the failure verdict carries the handle of the deletion it is about");
+        assertEquals(securitySaga,
+                store.unannouncedOutcomes(T0.plusSeconds(9999)).get(0).securitySagaId(),
+                "and so does the re-published one — a lost verdict may not lose its address");
+    }
+
+    @Test
+    void a_second_fact_hands_the_running_saga_the_newer_security_handle() {
+        // security only announces a second deletion once its previous saga finished, so the older
+        // handle names a closed case: a verdict echoing it would land nowhere and the newer
+        // request would hang until security's own timeout
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        UUID saga = store.start(new SagaStore.Opening(UUID.randomUUID(), "alice@example.com",
+                null, first, THREE), T0);
+        assertEquals(saga, store.start(new SagaStore.Opening(UUID.randomUUID(), "alice@example.com",
+                null, second, THREE), T0.plusSeconds(5)), "one running saga per account");
+        assertEquals(second,
+                store.confirm("alice@example.com", saga, "memes", THREE, T0).orElseThrow()
+                        .securitySagaId(),
+                "the verdict must reach the request that is actually waiting for it");
     }
 
     @Test
@@ -155,7 +251,7 @@ class JdbcSagaStoreTest {
                         T0.plusSeconds(11)).isEmpty(),
                 "even with a NEW saga running for the email, the stale id must stay a stray — "
                         + "falling back to the email lookup would let a closed case confirm the new one");
-        assertEquals(second,
+        assertEquals(new SagaStore.Recorded(second, null, true),
                 store.confirm("alice@example.com", second, "memes", Set.of("memes"), T0.plusSeconds(12))
                         .orElseThrow(),
                 "the new saga still completes on its OWN confirmation — the stray left no trace");
@@ -186,24 +282,51 @@ class JdbcSagaStoreTest {
                 "a compensated saga does not compensate again");
     }
 
+    /**
+     * The retry timeline, with the clock that matters: every re-command buys the participant a
+     * WHOLE purge timeout before the next decision. This test used to assert the opposite — three
+     * retries inside three seconds of sweeps, because the deadline was measured from the saga's
+     * birth and an overdue saga was a candidate on every single pass. That arithmetic put the
+     * failure verdict on the wire ~45s after the deadline, while the participant still had a live
+     * retry budget (90s) for the re-command it had just been sent: the purge then ran AFTER
+     * security had unlocked the account and mailed "your deletion failed".
+     */
     @Test
-    void the_sweep_retries_before_capitulating() {
+    void every_delivered_recommand_buys_a_whole_timeout_before_the_next_decision() {
         UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
         store.confirm("alice@example.com", null, "memes", THREE, T0);
+        Instant lastAsked = T0;
         for (int attempt = 1; attempt <= 3; attempt++) {
-            SagaStore.SweepResult swept =
-                    store.sweepOverdue(T0.plusSeconds(120), 3, T0.plusSeconds(120L + attempt));
+            Instant tooEarly = lastAsked.plusSeconds(TIMEOUT - 1);
+            assertEquals(List.of(), sweepAt(tooEarly).retries(),
+                    "attempt " + attempt + " may not be due one second before the timeout since"
+                            + " the last command — that is the participant's budget");
+            Instant due = lastAsked.plusSeconds(TIMEOUT + 1);
+            SagaStore.SweepResult swept = sweepAt(due);
             assertEquals(List.of(new SagaStore.Retry(saga, "alice@example.com")), swept.retries(),
                     "attempt " + attempt + " re-commands instead of giving up");
             assertEquals(List.of(), swept.compensated());
-            assertTrue(store.retryDelivered(saga),   // the loop's word that the re-command
-                    "a delivery against a STARTED saga must report the charge");   // reached the broker
+            assertTrue(store.retryDelivered(saga, due),   // the loop's word that the re-command
+                    "a delivery against a STARTED saga must report the charge");   // reached Kafka
+            lastAsked = due;
         }
-        SagaStore.SweepResult last = store.sweepOverdue(T0.plusSeconds(120), 3, T0.plusSeconds(200));
-        assertEquals(List.of(), last.retries(), "the retries are spent");
+        SagaStore.SweepResult early = sweepAt(lastAsked.plusSeconds(TIMEOUT - 1));
+        assertEquals(List.of(), early.retries(), "the retries are spent");
+        assertEquals(List.of(), early.compensated(),
+                "and capitulating here would announce the failure while the participant is still"
+                        + " working on the re-command it was just sent");
+        SagaStore.SweepResult last = sweepAt(lastAsked.plusSeconds(TIMEOUT + 1));
         assertEquals(List.of(new SagaStore.Compensated(saga, "alice@example.com", Set.of("memes"))),
                 last.compensated(),
                 "capitulation names the participants that DID purge — the partial-purge disclosure");
+        // 4 x 120s + 4s: the whole case outlives every one of the participant's 90s budgets, which
+        // is the property the old 165s timeline broke
+        assertEquals(T0.plusSeconds(4 * TIMEOUT + 4), lastAsked.plusSeconds(TIMEOUT + 1));
+    }
+
+    /** One sweep pass as the sweeper makes it: the cutoff is {@code now - purgeTimeout}. */
+    private SagaStore.SweepResult sweepAt(Instant now) {
+        return store.sweepOverdue(now.minusSeconds(TIMEOUT), 3, now);
     }
 
     @Test
@@ -242,11 +365,14 @@ class JdbcSagaStoreTest {
     }
 
     @Test
-    void a_delivered_retry_bumps_updated_at() throws Exception {
+    void a_delivered_retry_stamps_the_callers_instant_on_the_saga() throws Exception {
+        // updated_at is the sweep's clock now, so it has to come from the SAME clock the cutoff
+        // does — the caller's. Taking the database's CURRENT_TIMESTAMP instead would put the skew
+        // between two clocks straight into the participant's budget
         UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
-        store.retryDelivered(saga);
-        assertTrue(updatedAtInDb(saga).isAfter(T0),
-                "the delivered re-command is activity on the case; updated_at must move");
+        store.retryDelivered(saga, T0.plusSeconds(130));
+        assertEquals(T0.plusSeconds(130), updatedAtInDb(saga),
+                "the delivered re-command is activity on the case, stamped when the caller says");
     }
 
     private Instant updatedAtInDb(UUID saga) throws SQLException {
@@ -267,14 +393,14 @@ class JdbcSagaStoreTest {
         store.complete("alice@example.com", T0);
         // a late delivery report after completion must be a no-op — and must SAY so (false),
         // because the loop's retries-delivered metric counts only what was actually charged
-        assertFalse(store.retryDelivered(saga),
+        assertFalse(store.retryDelivered(saga, T0.plusSeconds(5)),
                 "a no-op on a finished saga must not report a charge");
         assertEquals(0, retriesInDb(saga), "a finished saga's counter must stay untouched");
     }
 
     @Test
     void a_delivery_report_for_an_unknown_saga_reports_no_charge() {
-        assertFalse(store.retryDelivered(UUID.randomUUID()),
+        assertFalse(store.retryDelivered(UUID.randomUUID(), T0),
                 "no saga, no charge — the metric must not count deliveries into the void");
     }
 

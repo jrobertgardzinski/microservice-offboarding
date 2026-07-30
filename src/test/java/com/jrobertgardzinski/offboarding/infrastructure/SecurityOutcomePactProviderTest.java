@@ -59,8 +59,11 @@ class SecurityOutcomePactProviderTest {
     @PactVerifyProvider("a portal content purged announcement")
     public String aPortalContentPurgedAnnouncement() {
         RouterFixture fixture = RouterFixture.router();
+        // the fact carries security's OWN saga id, exactly as its orchestrator writes it — the
+        // verdict below echoes it back, so the example is the real payload, correlation and all
         fixture.router.handle(RouterFixture.FACTS_TOPIC,
-                "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
+                "{\"id\":\"" + UUID.randomUUID() + "\",\"sagaId\":\"" + UUID.randomUUID() + "\","
+                        + "\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                         + "\"email\":\"leaver@example.com\",\"version\":1}");
         fixture.router.handle("memes-events", confirmation());
         fixture.router.handle("comments-events", confirmation());
@@ -70,20 +73,15 @@ class SecurityOutcomePactProviderTest {
 
     @PactVerifyProvider("a portal purge failed announcement")
     public String aPortalPurgeFailedAnnouncement() {
-        RouterFixture fixture = RouterFixture.router();
-        // started a minute before the fixture's fixed "now", swept two-minutes-plus later — overdue
-        fixture.store.start(UUID.randomUUID(), "leaver@example.com",
+        // no retry budget: the sweeper's road to capitulation is a story about a MOVING clock (each
+        // delivered re-command buys the participant another whole timeout), and this fixture's
+        // clock is fixed. The example needs the verdict, so let one sweep produce it
+        RouterFixture fixture = RouterFixture.routerCapitulatingAtOnce();
+        // started an hour before the fixture's fixed "now" and untouched since — overdue
+        fixture.store.start(new com.jrobertgardzinski.offboarding.application.SagaStore.Opening(
+                        UUID.randomUUID(), "leaver@example.com", null, UUID.randomUUID(),
+                        java.util.Set.copyOf(RouterFixture.PARTICIPANT_BY_TOPIC.values())),
                 java.time.Instant.parse("2026-07-11T11:00:00Z"));
-        // the sweeper re-commands the purge until the retries are spent; only then does the real
-        // failure announcement fall out. A retry burns only when its re-command was DELIVERED —
-        // report each one delivered, as KafkaLoop.settleDeliveries would after a proven send
-        for (int retry = 0; retry < com.jrobertgardzinski.offboarding.application.SweepOverdue
-                .DEFAULT_MAX_RETRIES; retry++) {
-            fixture.router.sweepOverdue().stream()
-                    .map(EventsRouter.Outgoing::countsRetryFor)
-                    .filter(java.util.Objects::nonNull)
-                    .forEach(fixture.store::retryDelivered);
-        }
         return fixture.router.sweepOverdue().stream()
                 .filter(outgoing -> EventsRouter.OUTCOMES_TOPIC.equals(outgoing.topic()))
                 .findFirst().orElseThrow().payload();

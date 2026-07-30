@@ -18,12 +18,14 @@ import org.slf4j.MDC;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -337,7 +339,7 @@ public class KafkaLoop {
                 Thread.sleep(sweepEvery.toMillis());
                 List<Sent> sent = new ArrayList<>();
                 for (EventsRouter.Outgoing outgoing : router.sweepOverdue()) {
-                    sent.add(new Sent(outgoing, send(producer, outgoing, null)));
+                    sent.add(new Sent(outgoing, send(producer, outgoing, sweepCid(outgoing))));
                 }
                 producer.flush();            // same order as the consumer: broker first (proven),
                 settleDeliveries(sent);      // outbox second — a failed send stays unannounced
@@ -385,7 +387,10 @@ public class KafkaLoop {
                 store.markAnnounced(each.outgoing().announcesSaga());
             }
             if (each.outgoing().countsRetryFor() != null
-                    && store.retryDelivered(each.outgoing().countsRetryFor())) {
+                    // the delivery just happened, so now IS the stamp — and the stamp is the
+                    // participant's budget for this re-command: the sweep's overdue clock runs
+                    // from it (SagaStore#retryDelivered)
+                    && store.retryDelivered(each.outgoing().countsRetryFor(), Instant.now())) {
                 // metered only when the store actually charged the counter: a delivery landing
                 // on a saga that meanwhile finished is a no-op there and must be one here too,
                 // or the metric would drift ahead of the sum of retries in the store
@@ -511,6 +516,29 @@ public class KafkaLoop {
             out.headers().add(CID_HEADER, cid.getBytes(StandardCharsets.UTF_8));
         }
         return producer.send(out);   // the future is the broker's word; settleDeliveries checks it
+    }
+
+    /**
+     * A correlation id for what the SWEEPER sends. The consumer inherits one from the record it is
+     * handling; the sweeper has no such record, and everything it sends used to go out bare — so
+     * the trace died precisely on the failure paths (re-commands, {@code PORTAL_PURGE_FAILED},
+     * re-announcements), which is where an operator needs it most.
+     *
+     * <p>So it is MINTED from the saga the message belongs to. Deterministic on purpose: a
+     * re-announcement of the same outcome carries the same id, exactly like its byte-identical
+     * payload, so duplicates stay recognisable as duplicates in the logs. And free of personal
+     * data, because a saga id names a CASE, not a person — the key already carries the address,
+     * the header must not add a second copy of it.
+     *
+     * <p>What it does NOT do: reconnect to the cid of the HTTP request that began the deletion.
+     * That would mean carrying the request's cid on the saga row (a column, a migration, and the
+     * store's business) — worth doing, not worth smuggling into this fix.
+     */
+    private static String sweepCid(EventsRouter.Outgoing outgoing) {
+        UUID saga = outgoing.announcesSaga() != null
+                ? outgoing.announcesSaga()
+                : outgoing.countsRetryFor();
+        return saga == null ? null : "saga-" + saga.toString().substring(0, 8);
     }
 
     private static String header(ConsumerRecord<String, String> record, String name) {
