@@ -23,7 +23,7 @@
     <properties>
         <mainClass>com.jrobertgardzinski.offboarding.infrastructure.Main</mainClass>
         <cucumber.version>7.20.1</cucumber.version>
-        <junit-suite.version>1.11.3</junit-suite.version>
+        <junit-suite.version>6.1.2</junit-suite.version>
         <allure.version>2.29.0</allure.version>
         <!-- the same Testcontainers the workspace already runs (microservice-memes gets 1.21.2
              from the Spring Boot 3.5.3 BOM; this Helidon build pins it explicitly) -->
