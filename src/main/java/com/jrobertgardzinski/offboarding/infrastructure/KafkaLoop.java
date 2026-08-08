@@ -367,13 +367,32 @@ public class KafkaLoop {
      * The outbox's second half, made honest: flush() pushes the batch out but reports no delivery
      * errors, so every send's future is checked here — after the flush they are already settled,
      * the get() does not really block. Only an outcome the broker demonstrably ACCEPTED earns its
-     * announced mark, and only a re-command that demonstrably ARRIVED charges its saga's retry
-     * counter — a broker outage burns no retries, so the sweeper can never capitulate without
-     * having re-asked on the wire. ANY failure then fails the pass (no commit, the retry path
-     * re-delivers), while the sends that did land keep their marks — re-handling is idempotent.
+     * announced mark — and only if every OTHER event of the same saga was accepted too (see
+     * below) — and only a re-command that demonstrably ARRIVED charges its saga's retry counter, so
+     * a broker outage burns no retries and the sweeper can never capitulate without having re-asked
+     * on the wire. ANY failure then fails the pass (no commit, the retry path re-delivers), while
+     * the sends that did land keep their marks — re-handling is idempotent.
      */
     private void settleDeliveries(List<Sent> sent) throws Exception {
         Exception firstFailure = null;
+        // A saga's events travel together: the closure command (or the compensation) and the
+        // verdict go out in one breath, and marking the saga announced would stop the sweeper from
+        // ever re-publishing either. So a saga with ANY undelivered event is withheld from the
+        // marking below — its outcome is re-published next pass, the accompanying command with it,
+        // and the participants absorb the duplicate because every one of the three commands is
+        // idempotent. Withholding the mark of a saga whose own verdict landed costs one duplicate
+        // announcement (deduplicated by its derived id); NOT withholding it costs a content
+        // erasure that never happens and that nothing ever reports.
+        Set<UUID> sagasWithAnUndeliveredEvent = new java.util.HashSet<>();
+        for (Sent each : sent) {
+            try {
+                each.delivery().get();
+            } catch (Exception ignoredHere) {
+                if (each.outgoing().partOfSaga() != null) {
+                    sagasWithAnUndeliveredEvent.add(each.outgoing().partOfSaga());
+                }
+            }
+        }
         for (Sent each : sent) {
             try {
                 each.delivery().get();
@@ -383,7 +402,8 @@ public class KafkaLoop {
                 }
                 continue;   // no announced mark, no counted retry, for what never reached the broker
             }
-            if (each.outgoing().announcesSaga() != null) {
+            if (each.outgoing().announcesSaga() != null
+                    && !sagasWithAnUndeliveredEvent.contains(each.outgoing().announcesSaga())) {
                 store.markAnnounced(each.outgoing().announcesSaga());
             }
             if (each.outgoing().countsRetryFor() != null

@@ -44,9 +44,17 @@ public interface SagaStore {
      * call that turned the LAST required confirmation into COMPLETED. A confirmation that landed
      * on no saga at all is {@link Optional#empty()} — a stray, recorded NOWHERE, which is a
      * different event from "recorded, not complete yet" and deserves its own log line.
-     * {@code securitySagaId} is the handle the verdict must echo (null when the saga has none).
+     * {@code securitySagaId} is the handle the verdict must echo (null when the saga has none), and
+     * {@code policy} is the leaver's stored choices, which the CLOSURE command carries back to the
+     * participants — they apply their rule at erasure time, so the last confirmation is exactly
+     * when that policy is needed again.
      */
-    record Recorded(UUID sagaId, UUID securitySagaId, boolean completedSaga) {
+    record Recorded(UUID sagaId, UUID securitySagaId, boolean completedSaga, String policy) {
+
+        /** The pre-closure spelling, for callers and tests that have no policy to carry. */
+        public Recorded(UUID sagaId, UUID securitySagaId, boolean completedSaga) {
+            this(sagaId, securitySagaId, completedSaga, null);
+        }
     }
 
     /**
@@ -78,12 +86,19 @@ public interface SagaStore {
     /**
      * A finished saga whose outcome never got its announced mark — the outbox backlog. The state
      * says which outcome to (re-)publish; {@code confirmed} matters only for the failed ones;
-     * {@code securitySagaId} is echoed by the re-published verdict just like by the first one.
+     * {@code securitySagaId} is echoed by the re-published verdict just like by the first one; and
+     * {@code policy} is what the accompanying CLOSURE command carries, because the participants'
+     * command and the outcome are published — and withheld — together.
      */
     record PendingOutcome(UUID sagaId, String email, String state, Set<String> confirmed,
-                          UUID securitySagaId) {
+                          UUID securitySagaId, String policy) {
         public PendingOutcome(UUID sagaId, String email, String state, Set<String> confirmed) {
-            this(sagaId, email, state, confirmed, null);
+            this(sagaId, email, state, confirmed, null, null);
+        }
+
+        public PendingOutcome(UUID sagaId, String email, String state, Set<String> confirmed,
+                              UUID securitySagaId) {
+            this(sagaId, email, state, confirmed, securitySagaId, null);
         }
     }
 

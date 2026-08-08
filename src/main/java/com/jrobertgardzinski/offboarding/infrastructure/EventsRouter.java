@@ -43,6 +43,28 @@ public class EventsRouter {
     public static final String OUTCOMES_TOPIC = "offboarding-events";
 
     /**
+     * The three commands this orchestrator sends its participants, and the whole reason the saga
+     * has a compensation worth the name.
+     *
+     * <p>{@link #MARK_COMMAND} is unchanged on the wire (the participants' pacts pin it) but no
+     * longer means "destroy": a participant marks the leaver's content, which takes it out of every
+     * public read and destroys nothing. Its confirmation — also unchanged — therefore now means
+     * "reserved", and a reservation is a thing that can be given back.
+     *
+     * <p>{@link #ERASE_COMMAND} is the CLOSURE: sent once every required participant has confirmed,
+     * so once the case can no longer fail. It is what actually deletes, and past it the saga has
+     * nothing left but retrying.
+     *
+     * <p>{@link #RESTORE_COMMAND} is the compensation: sent when the case is given up on, so the
+     * marks come off and the content is public again. It goes to EVERY participant, not only to the
+     * ones that confirmed — a participant may have marked and had its confirmation lost, and
+     * restoring what was never marked is a no-op by construction.
+     */
+    public static final String MARK_COMMAND = "PURGE_USER_CONTENT";
+    public static final String ERASE_COMMAND = "ERASE_USER_CONTENT";
+    public static final String RESTORE_COMMAND = "RESTORE_USER_CONTENT";
+
+    /**
      * The cap on the leaver's policy object, serialised (UTF-8 bytes): this service only FERRIES
      * the policy — it never reads it — so an absurdly large blob would ride into every saga row
      * (stored verbatim for the sweeper's re-command) and every re-commanded purge without limit.
@@ -60,13 +82,31 @@ public class EventsRouter {
      * Everything else leaves both null.
      */
     public record Outgoing(String topic, String key, String payload, UUID announcesSaga,
-                           UUID countsRetryFor) {
+                           UUID countsRetryFor, UUID partOfSaga) {
         public Outgoing(String topic, String key, String payload) {
-            this(topic, key, payload, null, null);
+            this(topic, key, payload, null, null, null);
         }
 
         public Outgoing(String topic, String key, String payload, UUID announcesSaga) {
-            this(topic, key, payload, announcesSaga, null);
+            this(topic, key, payload, announcesSaga, null, announcesSaga);
+        }
+
+        public Outgoing(String topic, String key, String payload, UUID announcesSaga,
+                        UUID countsRetryFor) {
+            this(topic, key, payload, announcesSaga, countsRetryFor,
+                    announcesSaga != null ? announcesSaga : countsRetryFor);
+        }
+
+        /**
+         * The saga this event belongs to for the purposes of the outbox mark — which is NOT the
+         * same question as "does it announce the outcome". A closure or a compensation command is
+         * published in the same breath as the verdict it accompanies, and if it fails to reach the
+         * broker while the verdict lands, marking the saga announced would seal the case with one
+         * of its two messages missing and nothing left to re-publish it. Naming the saga here lets
+         * the loop withhold the mark from ALL of a saga's events when ANY of them is undelivered.
+         */
+        public static Outgoing command(String topic, String key, String payload, UUID sagaId) {
+            return new Outgoing(topic, key, payload, null, null, sagaId);
         }
     }
 
@@ -133,8 +173,14 @@ public class EventsRouter {
             out.add(purgeRetryCommand(retry.sagaId(), retry.email(), retry.policy()));
         }
         for (SagaStore.Compensated failed : swept.compensated()) {
-            LOG.warn("portal purge overdue for {} despite the retries; announcing the failure "
-                    + "(saga {}, already purged: {})", masked(failed.email()), failed.sagaId(), failed.confirmed());
+            LOG.warn("portal purge overdue for {} despite the retries; compensating and announcing "
+                            + "the failure (saga {}, already marked: {})",
+                    masked(failed.email()), failed.sagaId(), failed.confirmed());
+            // the compensation goes out FIRST, and it is what makes this word honest: before the
+            // participants learnt to mark instead of destroy, "compensated" meant nothing but an
+            // apology — the content was already gone. It is sent to every participant, not only to
+            // the ones that confirmed: a mark whose confirmation was lost is still a mark
+            out.add(participantCommand(RESTORE_COMMAND, failed.sagaId(), failed.email(), null));
             out.add(outcome("PORTAL_PURGE_FAILED", failed.email(), failed.sagaId(),
                     failed.securitySagaId(), failed.confirmed()));
         }
@@ -144,7 +190,16 @@ public class EventsRouter {
         for (SagaStore.PendingOutcome pending : swept.unannounced()) {
             LOG.info("re-announcing the {} outcome for {} (saga {}): the first announcement "
                     + "never reached the broker", pending.state(), masked(pending.email()), pending.sagaId());
-            out.add("COMPLETED".equals(pending.state())
+            // the participants' command rides along with every re-announcement, because the two
+            // went out together and are withheld together: a saga is marked announced only when
+            // ALL of its events reached the broker (KafkaLoop#settleDeliveries), so an outcome
+            // still unannounced means the closure (or the compensation) may be missing too. Both
+            // are idempotent at the participants, so repeating a delivered one costs nothing —
+            // whereas losing a closure leaves content hidden for ever and nobody the wiser
+            boolean completed = "COMPLETED".equals(pending.state());
+            out.add(participantCommand(completed ? ERASE_COMMAND : RESTORE_COMMAND,
+                    pending.sagaId(), pending.email(), completed ? pending.policy() : null));
+            out.add(completed
                     ? outcome("PORTAL_CONTENT_PURGED", pending.email(), pending.sagaId(),
                     pending.securitySagaId(), null)
                     : outcome("PORTAL_PURGE_FAILED", pending.email(), pending.sagaId(),
@@ -267,27 +322,55 @@ public class EventsRouter {
                     participant, masked(email));
             return List.of();
         }
-        LOG.info("all participants confirmed for {}; announcing the portal purged", masked(email));
-        return List.of(outcome("PORTAL_CONTENT_PURGED", email, landed.get().sagaId(),
-                landed.get().securitySagaId(), null));
+        LOG.info("all participants confirmed the mark for {}; closing the saga (the erasure is"
+                + " commanded now) and announcing the portal purged", masked(email));
+        // ORDER MATTERS, and not for the reason it looks like. The closure is what makes the
+        // erasure real, and the verdict is what lets security delete the account; publishing the
+        // closure first means the irreversible step is on the wire before anybody is told the
+        // portal is clean. Neither is marked announced until BOTH have reached the broker, so a
+        // half-published pair is simply re-published by the next sweep.
+        return List.of(
+                participantCommand(ERASE_COMMAND, landed.get().sagaId(), email,
+                        landed.get().policy()),
+                outcome("PORTAL_CONTENT_PURGED", email, landed.get().sagaId(),
+                        landed.get().securitySagaId(), null));
     }
 
     private Outgoing purgeCommand(UUID sagaId, String email, JsonNode policy) {
-        return new Outgoing(COMMANDS_TOPIC, email, purgePayload(sagaId, email, policy));
+        return new Outgoing(COMMANDS_TOPIC, email, commandPayload(MARK_COMMAND, sagaId, email, policy));
+    }
+
+    /**
+     * The closure and the compensation, in the SAME envelope as the mark they end — same topic,
+     * same key, same fields, only the {@code type} differs, so a participant routes all three from
+     * one listener and an operator reading the topic sees one conversation.
+     *
+     * <p>The closure carries the leaver's stored policy: the participants apply their rule (delete,
+     * anonymise, keep the popular ones) at ERASURE time, not at mark time, because the rule reads
+     * vote scores and the leaver's own votes only go with the erasure. The compensation carries
+     * none — putting content back needs no policy.
+     *
+     * <p>{@code partOfSaga} rather than {@code announcesSaga}: this event does not announce the
+     * outcome, but it must share the outcome's fate at the outbox (see {@link Outgoing#command}).
+     */
+    private Outgoing participantCommand(String type, UUID sagaId, String email, String storedPolicy) {
+        return Outgoing.command(COMMANDS_TOPIC, email,
+                commandPayload(type, sagaId, email, storedPolicy(sagaId, storedPolicy)), sagaId);
     }
 
     /**
      * The sweeper's re-command: the SAME shape as {@link #purgeCommand}, built by the same
-     * {@link #purgePayload} — including the leaver's policy choices, restored verbatim from the
+     * {@link #commandPayload} — including the leaver's policy choices, restored verbatim from the
      * saga — plus the {@code countsRetryFor} mark that lets the loop charge the retry counter
      * only after the broker demonstrably accepted it.
      */
     private Outgoing purgeRetryCommand(UUID sagaId, String email, String storedPolicy) {
         return new Outgoing(COMMANDS_TOPIC, email,
-                purgePayload(sagaId, email, storedPolicy(sagaId, storedPolicy)), null, sagaId);
+                commandPayload(MARK_COMMAND, sagaId, email, storedPolicy(sagaId, storedPolicy)),
+                null, sagaId);
     }
 
-    /** The stored policy back into the node {@link #purgePayload} ferries; null stays null. */
+    /** The stored policy back into the node {@link #commandPayload} ferries; null stays null. */
     private JsonNode storedPolicy(UUID sagaId, String storedPolicy) {
         if (storedPolicy == null) {
             return null;
@@ -302,11 +385,11 @@ public class EventsRouter {
         }
     }
 
-    private String purgePayload(UUID sagaId, String email, JsonNode policy) {
+    private String commandPayload(String type, UUID sagaId, String email, JsonNode policy) {
         ObjectNode command = mapper.createObjectNode()
                 .put("id", UUID.randomUUID().toString())
                 .put("sagaId", sagaId.toString())
-                .put("type", "PURGE_USER_CONTENT")
+                .put("type", type)
                 .put("email", email)
                 // envelope version (workspace ADR 0004): fields only ever added within version 1
                 .put("version", 1);

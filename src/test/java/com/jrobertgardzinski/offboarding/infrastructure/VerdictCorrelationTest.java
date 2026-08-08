@@ -79,7 +79,9 @@ class VerdictCorrelationTest {
         router.handle(FACTS, fact(UUID.randomUUID(), securitySaga));
         List<EventsRouter.Outgoing> out = router.handle("memes-events",
                 "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + LEAVER + "\",\"version\":1}");
-        assertEquals(securitySaga.toString(), payload(out.get(0)).path("sagaId").asText(),
+        // onOutcomes, not get(0): the completing confirmation now emits the CLOSURE command first
+        // and the verdict second — the correlation belongs to the verdict
+        assertEquals(securitySaga.toString(), payload(onOutcomes(out)).path("sagaId").asText(),
                 "the purged verdict must name the deletion request it settles");
     }
 
@@ -133,7 +135,7 @@ class VerdictCorrelationTest {
                 + "\",\"version\":1}");
         List<EventsRouter.Outgoing> out = router.handle("memes-events",
                 "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + LEAVER + "\",\"version\":1}");
-        assertFalse(payload(out.get(0)).has("sagaId"),
+        assertFalse(payload(onOutcomes(out)).has("sagaId"),
                 "no handle to echo means no field — never an invented one");
     }
 

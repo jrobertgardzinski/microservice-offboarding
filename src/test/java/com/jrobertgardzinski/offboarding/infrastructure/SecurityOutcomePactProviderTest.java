@@ -67,8 +67,11 @@ class SecurityOutcomePactProviderTest {
                         + "\"email\":\"leaver@example.com\",\"version\":1}");
         fixture.router.handle("memes-events", confirmation());
         fixture.router.handle("comments-events", confirmation());
-        return fixture.router.handle("usercollections-events", confirmation())
-                .get(0).payload();
+        // the completing confirmation emits the CLOSURE command first and the verdict second;
+        // security's pact is about the verdict
+        return fixture.router.handle("usercollections-events", confirmation()).stream()
+                .filter(outgoing -> EventsRouter.OUTCOMES_TOPIC.equals(outgoing.topic()))
+                .findFirst().orElseThrow().payload();
     }
 
     @PactVerifyProvider("a portal purge failed announcement")

@@ -33,6 +33,23 @@ Feature: Offboarding — the portal cleans up after a leaving account
     When collections confirms its purge for alice@example.com
     Then the portal announces the content of alice@example.com purged
 
+  Scenario: The last confirmation also commands the erasure — that is what closes the case
+    Given security announced that alice@example.com requested deletion choosing memes=DELETE and comments=ANONYMIZE_AUTHOR
+    And memes confirmed its purge for alice@example.com
+    And comments confirmed its purge for alice@example.com
+    When collections confirms its purge for alice@example.com
+    Then the portal commands the erasure of the content of alice@example.com
+    And the erasure command carries the choices memes=DELETE and comments=ANONYMIZE_AUTHOR
+    And the erasure is commanded before the outcome is announced
+
+  Scenario: Giving up restores the content it had reserved, and only then apologises
+    Given security announced that alice@example.com requested deletion
+    And memes confirmed its purge for alice@example.com
+    When the purge deadline passes and every retry is exhausted
+    Then the portal commands the restore of the content of alice@example.com
+    And the restore is commanded before the outcome is announced
+    And the portal announces the purge for alice@example.com failed
+
   Scenario: A confirmation may echo the purge command it answers
     Given security announced that alice@example.com requested deletion
     And memes confirmed its purge for alice@example.com

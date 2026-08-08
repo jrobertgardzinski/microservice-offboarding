@@ -47,4 +47,14 @@ public class CommentsCommandPactProviderTest {
     public String aPurgeUserContentCommandWithPolicy() {
         return CommandPactBase.realPurgeCommandWithPolicy();
     }
+
+    @PactVerifyProvider("an erase user content command closing the saga")
+    public String anEraseUserContentCommand() {
+        return CommandPactBase.realEraseCommand();
+    }
+
+    @PactVerifyProvider("a restore user content command compensating the saga")
+    public String aRestoreUserContentCommand() {
+        return CommandPactBase.realRestoreCommand();
+    }
 }

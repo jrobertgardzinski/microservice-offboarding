@@ -65,8 +65,13 @@ class OutcomeOutboxTest {
                 + "\"email\":\"leaver@example.com\",\"version\":1}");
         List<EventsRouter.Outgoing> outcome = router.handle("memes-events",
                 "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"leaver@example.com\",\"version\":1}");
-        assertEquals(1, outcome.size(), "the completing confirmation announces once");
-        return outcome.get(0).announcesSaga();
+        // two events, in this order: the CLOSURE that lets the participants erase for real, then
+        // the single verdict security waits for. The mark was reversible up to this instant
+        assertEquals(2, outcome.size(), "the completing confirmation closes the saga and announces it");
+        assertEquals(EventsRouter.COMMANDS_TOPIC, outcome.get(0).topic());
+        assertTrue(outcome.get(0).payload().contains("\"" + EventsRouter.ERASE_COMMAND + "\""));
+        assertEquals(EventsRouter.OUTCOMES_TOPIC, outcome.get(1).topic());
+        return outcome.get(1).announcesSaga();
     }
 
     @Test
@@ -75,10 +80,17 @@ class OutcomeOutboxTest {
         // the crash: the outcome above never reached the broker, so nobody marked it announced
         now = now.plus(SweepOverdue.DEFAULT_REPUBLISH_AFTER).plusSeconds(1);
         List<EventsRouter.Outgoing> swept = router.sweepOverdue();
-        assertEquals(1, swept.size(), "the sweep owes the world exactly this outcome");
-        assertEquals(EventsRouter.OUTCOMES_TOPIC, swept.get(0).topic());
-        assertTrue(swept.get(0).payload().contains("\"PORTAL_CONTENT_PURGED\""));
-        assertEquals(sagaId, swept.get(0).announcesSaga(),
+        // the PAIR is re-published, not just the verdict: the two went out together and are
+        // withheld together, so an unannounced outcome means the closure may be missing too — and
+        // a closure nobody repeats leaves the leaver's content hidden but never erased
+        assertEquals(2, swept.size(), "the sweep owes the world this closure AND this outcome");
+        assertEquals(EventsRouter.COMMANDS_TOPIC, swept.get(0).topic());
+        assertTrue(swept.get(0).payload().contains("\"" + EventsRouter.ERASE_COMMAND + "\""));
+        assertEquals(sagaId, swept.get(0).partOfSaga(),
+                "the re-commanded closure shares the outcome's fate at the outbox");
+        assertEquals(EventsRouter.OUTCOMES_TOPIC, swept.get(1).topic());
+        assertTrue(swept.get(1).payload().contains("\"PORTAL_CONTENT_PURGED\""));
+        assertEquals(sagaId, swept.get(1).announcesSaga(),
                 "the re-published outcome names its saga so the loop can settle the mark");
     }
 

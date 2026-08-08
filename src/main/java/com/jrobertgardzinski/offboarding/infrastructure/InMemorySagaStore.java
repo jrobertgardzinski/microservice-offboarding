@@ -100,9 +100,11 @@ public class InMemorySagaStore implements SagaStore {
             if (saga.confirmed.containsAll(quorum)) {
                 saga.state = "COMPLETED";   // the once-latch: running() no longer finds it
                 saga.updatedAt = at;
-                return new Recorded(saga.id, saga.securitySagaId, true);
+                // the policy rides back out with the completing confirmation: the caller sends
+                // the CLOSURE command next, and that is what carries it to the participants
+                return new Recorded(saga.id, saga.securitySagaId, true, saga.policy);
             }
-            return new Recorded(saga.id, saga.securitySagaId, false);
+            return new Recorded(saga.id, saga.securitySagaId, false, saga.policy);
         });
     }
 
@@ -166,7 +168,7 @@ public class InMemorySagaStore implements SagaStore {
                 .filter(saga -> saga.finished() && !saga.announced && saga.updatedAt.isBefore(olderThan))
                 .map(saga -> new PendingOutcome(saga.id, saga.email, saga.state,
                         "COMPENSATED".equals(saga.state) ? Set.copyOf(saga.confirmed) : Set.<String>of(),
-                        saga.securitySagaId))
+                        saga.securitySagaId, saga.policy))
                 .toList();
     }
 

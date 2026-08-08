@@ -276,6 +276,46 @@ public class OffboardingSteps {
         }
     }
 
+    @Then("the portal commands the erasure of the content of {word}")
+    public void erasureCommanded(String email) {
+        JsonNode command = onlyCommandOfType(EventsRouter.ERASE_COMMAND);
+        assertEquals(email, command.path("email").asText());
+        assertTrue(command.hasNonNull("sagaId"),
+                "the closure names the case it closes, like every other command of this saga");
+    }
+
+    @Then("the erasure command carries the choices memes={word} and comments={word}")
+    public void erasureCommandCarriesPolicy(String memesRule, String commentsRule) {
+        // the participants apply the rule at ERASURE time — the mark must change nothing — so the
+        // choices the leaver made have to survive all the way to the closure, not just to the mark
+        JsonNode policy = onlyCommandOfType(EventsRouter.ERASE_COMMAND).path("policy");
+        assertEquals(memesRule, policy.path("memes").asText());
+        assertEquals(commentsRule, policy.path("comments").asText());
+    }
+
+    @Then("the portal commands the restore of the content of {word}")
+    public void restoreCommanded(String email) {
+        JsonNode command = onlyCommandOfType(EventsRouter.RESTORE_COMMAND);
+        assertEquals(email, command.path("email").asText());
+        assertTrue(command.path("policy").isMissingNode() || command.path("policy").isNull(),
+                "putting content back needs no policy: " + command);
+    }
+
+    @Then("the {word} is commanded before the outcome is announced")
+    public void commandPrecedesTheOutcome(String which) {
+        // ORDER, not merely presence. The closure is the irreversible act and the verdict is what
+        // lets security delete the account; the compensation is what makes the apology true. Either
+        // one announced first would mean the world learns the case is settled before it is.
+        String type = "erasure".equals(which) ? EventsRouter.ERASE_COMMAND : EventsRouter.RESTORE_COMMAND;
+        int command = indexOfFirst(o -> o.topic().equals(EventsRouter.COMMANDS_TOPIC)
+                && payloadOf(o).path("type").asText().equals(type));
+        int outcome = indexOfFirst(o -> o.topic().equals(EventsRouter.OUTCOMES_TOPIC));
+        assertTrue(command >= 0, "no " + type + " command went out at all: " + announced);
+        assertTrue(outcome >= 0, "no outcome was announced at all: " + announced);
+        assertTrue(command < outcome,
+                "the " + which + " must be on the wire before the outcome that ends the case");
+    }
+
     @Then("the portal announces the content of {word} purged")
     public void portalPurgedAnnounced(String email) {
         JsonNode outcome = onlyOn(EventsRouter.OUTCOMES_TOPIC);
@@ -304,10 +344,13 @@ public class OffboardingSteps {
 
     @Then("a fresh purge command for {word} opens a brand-new case")
     public void freshPurgeCommandOpensANewCase(String email) {
-        List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC);
+        // the MARK commands only: the participants' topic also carries the closure that ended the
+        // first case, which is a different message about the same address
+        List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC).stream()
+                .filter(command -> EventsRouter.MARK_COMMAND.equals(command.path("type").asText()))
+                .toList();
         assertEquals(2, commands.size(), "the command of the finished case and the fresh one");
         for (JsonNode command : commands) {
-            assertEquals("PURGE_USER_CONTENT", command.path("type").asText());
             assertEquals(email, command.path("email").asText());
         }
         assertNotEquals(commands.get(0).path("sagaId").asText(), commands.get(1).path("sagaId").asText(),
@@ -339,6 +382,37 @@ public class OffboardingSteps {
         List<EventsRouter.Outgoing> outcomes = announced.stream()
                 .filter(o -> o.topic().equals(EventsRouter.OUTCOMES_TOPIC)).toList();
         assertEquals(List.of(), outcomes, "no outcome may be announced yet");
+    }
+
+    /**
+     * The one command of a given type on the participants' topic. Filtering by type is what the
+     * three-command saga costs the test world: the topic now carries the mark, its retries and the
+     * one message that ends the case, all keyed by the same address.
+     */
+    private JsonNode onlyCommandOfType(String type) {
+        List<JsonNode> matching = allOn(EventsRouter.COMMANDS_TOPIC).stream()
+                .filter(command -> type.equals(command.path("type").asText()))
+                .toList();
+        assertEquals(1, matching.size(),
+                "expected exactly one " + type + " command, got " + announced);
+        return matching.get(0);
+    }
+
+    private int indexOfFirst(java.util.function.Predicate<EventsRouter.Outgoing> match) {
+        for (int i = 0; i < announced.size(); i++) {
+            if (match.test(announced.get(i))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private JsonNode payloadOf(EventsRouter.Outgoing outgoing) {
+        try {
+            return mapper.readTree(outgoing.payload());
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private JsonNode onlyOn(String topic) {
