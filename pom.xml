@@ -12,7 +12,7 @@
     <parent>
         <groupId>io.helidon.applications</groupId>
         <artifactId>helidon-se</artifactId>
-        <version>4.5.0</version>
+        <version>4.5.1</version>
         <relativePath/>
     </parent>
 
@@ -23,11 +23,11 @@
     <properties>
         <mainClass>com.jrobertgardzinski.offboarding.infrastructure.Main</mainClass>
         <cucumber.version>7.20.1</cucumber.version>
-        <junit-suite.version>1.11.3</junit-suite.version>
-        <allure.version>2.29.0</allure.version>
+        <junit-suite.version>6.1.2</junit-suite.version>
+        <allure.version>2.35.4</allure.version>
         <!-- the same Testcontainers the workspace already runs (microservice-memes gets 1.21.2
              from the Spring Boot 3.5.3 BOM; this Helidon build pins it explicitly) -->
-        <testcontainers.version>1.21.2</testcontainers.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 
     <dependencyManagement>
@@ -63,7 +63,7 @@
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.5.12</version>
+            <version>1.6.1</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
@@ -80,24 +80,24 @@
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
-            <version>10.20.1</version>
+            <version>13.1.0</version>
         </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
-            <version>10.20.1</version>
+            <version>13.1.0</version>
             <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
-            <version>42.7.4</version>
+            <version>42.7.13</version>
             <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <version>2.3.232</version>
+            <version>2.4.240</version>
         </dependency>
 
         <!-- the saga's transport: consume the deletion fact and the participants' confirmations,
@@ -165,13 +165,13 @@
         <dependency>
             <groupId>au.com.dius.pact.consumer</groupId>
             <artifactId>junit5</artifactId>
-            <version>4.6.17</version>
+            <version>4.7.3</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>au.com.dius.pact.provider</groupId>
             <artifactId>junit5</artifactId>
-            <version>4.6.17</version>
+            <version>4.7.3</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -206,7 +206,7 @@
             <plugin>
                 <groupId>io.qameta.allure</groupId>
                 <artifactId>allure-maven</artifactId>
-                <version>2.17.0</version>
+                <version>3.0.3</version>
             </plugin>
         </plugins>
     </build>
