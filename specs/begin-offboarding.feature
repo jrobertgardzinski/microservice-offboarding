@@ -1,12 +1,13 @@
+# engineer's notes: this is the portal's process manager for account deletion, extracted
+# from the identity service so identity stays reusable; idempotency of commands is the
+# estate's standing law (ADR 0006, the generic IdempotentCommandsTest), not restated here
 Feature: Beginning the offboarding — a deletion FACT opens a CASE
 
-  The portal's process manager for account deletion, extracted from the identity
-  service so identity stays reusable. Security announces the FACT that an account
-  requested deletion; this service opens a CASE and commands every configured
-  content participant to PURGE — reserve the leaver's content, ready to be erased
-  for good or brought back. Commands are idempotent BY DEFAULT (workspace ADR 0006
-  — enforced by the generic IdempotentCommandsTest, not restated per scenario);
-  the scenarios pin the message choreography.
+  When an account leaves, the portal cleans up after it. Security announces the
+  FACT that the account requested deletion; this service opens a CASE and
+  commands every content participant to PURGE — set the leaver's content aside,
+  ready to be erased for good or brought back. The scenarios pin the message
+  choreography, and every command may safely arrive twice.
 
   Rule: A deletion FACT commands the content PURGE
 
