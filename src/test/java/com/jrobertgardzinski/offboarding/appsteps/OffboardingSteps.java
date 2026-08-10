@@ -115,7 +115,7 @@ public class OffboardingSteps {
                         + "\"email\":\"" + email + "\",\"version\":1}"));
     }
 
-    @When("security replays the deletion fact for {word}")
+    @When("security replays the deletion FACT for {word}")
     public void deletionFactReplayed(String email) {
         deletionRequested(email);   // byte-for-byte the fact that opened the case
     }
@@ -134,19 +134,19 @@ public class OffboardingSteps {
                         + "\"email\":\"mallory@example.com\",\"version\":1}"));
     }
 
-    @Given("{word} confirmed its purge for {word}")
-    @When("{word} confirms its purge for {word}")
+    @Given("{word} confirmed its PURGE for {word}")
+    @When("{word} confirms its PURGE for {word}")
     public void participantConfirms(String participant, String email) {
         announced.addAll(router.handle(topicOf(participant),
                 "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + email + "\",\"version\":1}"));
     }
 
-    @When("{word} confirms its purge for {word} echoing the purge command")
+    @When("{word} confirms its PURGE for {word} echoing the PURGE command")
     public void participantConfirmsEchoingTheCommand(String participant, String email) {
         confirmEchoing(participant, email, commandedSagaId());
     }
 
-    @When("every content service confirms its purge for {word} echoing the purge command the portal gave up on")
+    @When("every content service confirms its PURGE for {word} echoing the PURGE command the portal gave up on")
     public void everyParticipantConfirmsTheAbandonedCommand(String email) {
         // the FIRST command is the one the portal later gave up on — a newer case for the same
         // account may have commanded again since, and that one was not given up
@@ -200,14 +200,14 @@ public class OffboardingSteps {
         announced.removeIf(o -> o.topic().equals(EventsRouter.OUTCOMES_TOPIC));
     }
 
-    @When("the purge deadline passes")
+    @When("the PURGE deadline passes")
     public void deadlinePasses() {
         now = now.plus(TIMEOUT).plusSeconds(1);
         announced.addAll(sweepWithDeliveredRetries());
     }
 
-    @Given("the purge deadline passed and every retry was exhausted")
-    @When("the purge deadline passes and every retry is exhausted")
+    @Given("the PURGE deadline passed and every retry was exhausted")
+    @When("the PURGE deadline passes and every retry is exhausted")
     public void deadlinePassesAndRetriesRunOut() {
         // one deadline per retry, plus the one that finally capitulates: each DELIVERED re-command
         // buys the participant another whole timeout, so exhausting the budget takes
@@ -218,14 +218,14 @@ public class OffboardingSteps {
         }
     }
 
-    @When("the next sweep comes around")
+    @When("the next SWEEP comes around")
     public void nextSweepComesAround() {
         // late enough that a still-owed outcome is no longer "merely in flight"
         now = now.plus(SweepOverdue.DEFAULT_REPUBLISH_AFTER).plusSeconds(1);
         announced.addAll(sweepWithDeliveredRetries());
     }
 
-    @When("the retention period passes")
+    @When("the RETENTION period passes")
     public void retentionPeriodPasses() {
         now = now.plus(SweepOverdue.DEFAULT_RETENTION).plusSeconds(1);
         announced.addAll(sweepWithDeliveredRetries());
@@ -246,7 +246,7 @@ public class OffboardingSteps {
         return swept;
     }
 
-    @Then("a purge command for {word} goes out to the content services")
+    @Then("a PURGE command for {word} goes out to the content services")
     public void purgeCommandWentOut(String email) {
         JsonNode command = onlyOn(EventsRouter.COMMANDS_TOPIC);
         assertEquals("PURGE_USER_CONTENT", command.path("type").asText());
@@ -254,14 +254,14 @@ public class OffboardingSteps {
         assertTrue(command.hasNonNull("sagaId"), "participants confirm by saga");
     }
 
-    @Then("the purge command carries the choices memes={word} and comments={word}")
+    @Then("the PURGE command carries the choices memes={word} and comments={word}")
     public void purgeCommandCarriesPolicy(String memesRule, String commentsRule) {
         JsonNode policy = onlyOn(EventsRouter.COMMANDS_TOPIC).path("policy");
         assertEquals(memesRule, policy.path("memes").asText());
         assertEquals(commentsRule, policy.path("comments").asText());
     }
 
-    @Then("every purge command carries the choices memes={word} and comments={word}")
+    @Then("every PURGE command carries the choices memes={word} and comments={word}")
     public void everyPurgeCommandCarriesPolicy(String memesRule, String commentsRule) {
         // the retry must repeat the ORIGINAL command — the choices stored with the saga, not the
         // participants' defaults; every command on the wire carries them identically
@@ -276,7 +276,7 @@ public class OffboardingSteps {
         }
     }
 
-    @Then("the portal commands the erasure of the content of {word}")
+    @Then("the portal commands the ERASURE of the content of {word}")
     public void erasureCommanded(String email) {
         JsonNode command = onlyCommandOfType(EventsRouter.ERASE_COMMAND);
         assertEquals(email, command.path("email").asText());
@@ -284,7 +284,7 @@ public class OffboardingSteps {
                 "the closure names the case it closes, like every other command of this saga");
     }
 
-    @Then("the erasure command carries the choices memes={word} and comments={word}")
+    @Then("the ERASURE command carries the choices memes={word} and comments={word}")
     public void erasureCommandCarriesPolicy(String memesRule, String commentsRule) {
         // the participants apply the rule at ERASURE time — the mark must change nothing — so the
         // choices the leaver made have to survive all the way to the closure, not just to the mark
@@ -293,7 +293,7 @@ public class OffboardingSteps {
         assertEquals(commentsRule, policy.path("comments").asText());
     }
 
-    @Then("the portal commands the restore of the content of {word}")
+    @Then("the portal commands the RESTORE of the content of {word}")
     public void restoreCommanded(String email) {
         JsonNode command = onlyCommandOfType(EventsRouter.RESTORE_COMMAND);
         assertEquals(email, command.path("email").asText());
@@ -301,12 +301,12 @@ public class OffboardingSteps {
                 "putting content back needs no policy: " + command);
     }
 
-    @Then("the {word} is commanded before the outcome is announced")
+    @Then("the {word} is commanded before the OUTCOME is announced")
     public void commandPrecedesTheOutcome(String which) {
         // ORDER, not merely presence. The closure is the irreversible act and the verdict is what
         // lets security delete the account; the compensation is what makes the apology true. Either
         // one announced first would mean the world learns the case is settled before it is.
-        String type = "erasure".equals(which) ? EventsRouter.ERASE_COMMAND : EventsRouter.RESTORE_COMMAND;
+        String type = "ERASURE".equals(which) ? EventsRouter.ERASE_COMMAND : EventsRouter.RESTORE_COMMAND;
         int command = indexOfFirst(o -> o.topic().equals(EventsRouter.COMMANDS_TOPIC)
                 && payloadOf(o).path("type").asText().equals(type));
         int outcome = indexOfFirst(o -> o.topic().equals(EventsRouter.OUTCOMES_TOPIC));
@@ -323,14 +323,14 @@ public class OffboardingSteps {
         assertEquals(email, outcome.path("email").asText());
     }
 
-    @Then("the portal announces the purge for {word} failed")
+    @Then("the portal announces the PURGE for {word} failed")
     public void purgeFailureAnnounced(String email) {
         JsonNode outcome = onlyOn(EventsRouter.OUTCOMES_TOPIC);
         assertEquals("PORTAL_PURGE_FAILED", outcome.path("type").asText());
         assertEquals(email, outcome.path("email").asText());
     }
 
-    @Then("the purge command for {word} is sent again")
+    @Then("the PURGE command for {word} is sent again")
     public void purgeCommandResent(String email) {
         List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC);
         assertEquals(2, commands.size(), "the original command and exactly one re-send");
@@ -342,7 +342,7 @@ public class OffboardingSteps {
                 "the re-send commands the SAME saga, not a fork");
     }
 
-    @Then("a fresh purge command for {word} opens a brand-new case")
+    @Then("a fresh PURGE command for {word} opens a brand-new CASE")
     public void freshPurgeCommandOpensANewCase(String email) {
         // the MARK commands only: the participants' topic also carries the closure that ended the
         // first case, which is a different message about the same address
@@ -376,8 +376,8 @@ public class OffboardingSteps {
         assertTrue(named, "the failure must disclose the partial purge: " + confirmed);
     }
 
-    @Then("no outcome is announced yet")
-    @Then("no outcome is announced again")
+    @Then("no OUTCOME is announced yet")
+    @Then("no OUTCOME is announced again")
     public void nothingAnnounced() {
         List<EventsRouter.Outgoing> outcomes = announced.stream()
                 .filter(o -> o.topic().equals(EventsRouter.OUTCOMES_TOPIC)).toList();

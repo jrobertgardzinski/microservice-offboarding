@@ -188,6 +188,33 @@
                     </execution>
                 </executions>
             </plugin>
+            <!-- the top-level specs/ dir (one Gherkin file per use case — the entry point into
+                 this service) goes onto the test classpath instead of copying the files around;
+                 microservice-security's convention -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.6.1</version>
+                <executions>
+                    <execution>
+                        <id>add-specs</id>
+                        <phase>generate-test-resources</phase>
+                        <goals>
+                            <goal>add-test-resource</goal>
+                        </goals>
+                        <configuration>
+                            <resources>
+                                <resource>
+                                    <directory>${project.basedir}/specs</directory>
+                                    <includes>
+                                        <include>**/*.feature</include>
+                                    </includes>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>

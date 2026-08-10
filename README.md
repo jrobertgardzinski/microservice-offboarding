@@ -72,7 +72,7 @@ checkouts; skipped, not failed, when a sibling is absent.
 ## Run & test
 
 ```bash
-mvn test                 # scenarios (features/offboarding.feature), the law, JDBC, pacts
+mvn test                 # the specs/ scenarios (begin, record, sweep), the law, JDBC, pacts
 mvn package && java -jar target/microservice-offboarding.jar
 ```
 
