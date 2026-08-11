@@ -9,6 +9,9 @@ import au.com.dius.pact.core.model.PactSpecVersion;
 import au.com.dius.pact.core.model.annotations.Pact;
 import au.com.dius.pact.core.model.messaging.Message;
 import au.com.dius.pact.core.model.messaging.MessagePact;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
+import io.qameta.allure.Story;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -18,6 +21,9 @@ import static com.jrobertgardzinski.offboarding.infrastructure.RouterFixture.rou
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The comments twin of {@link MemesConfirmationContractTest} — same fields, its own topic. */
+@Epic("Contract")
+@Feature("Purge confirmations")
+@Story("Comments")
 @ExtendWith(PactConsumerTestExt.class)
 @PactTestFor(providerName = "microservice-comments", providerType = ProviderType.ASYNCH,
         pactVersion = PactSpecVersion.V3)

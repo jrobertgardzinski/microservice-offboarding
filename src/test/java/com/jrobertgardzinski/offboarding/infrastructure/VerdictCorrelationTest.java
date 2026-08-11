@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jrobertgardzinski.offboarding.application.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.application.RecordConfirmation;
 import com.jrobertgardzinski.offboarding.application.SweepOverdue;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
@@ -33,6 +35,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>The clock here MOVES, because the sweeper's timeline now depends on it: a delivered
  * re-command buys the participant a whole purge timeout before the next decision.
  */
+@Epic("Saga")
+@Feature("Verdict correlation")
 class VerdictCorrelationTest {
 
     private static final String FACTS = "security-events";

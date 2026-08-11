@@ -6,6 +6,8 @@ import au.com.dius.pact.provider.junit5.PactVerificationContext;
 import au.com.dius.pact.provider.junit5.PactVerificationInvocationContextProvider;
 import au.com.dius.pact.provider.junitsupport.Provider;
 import au.com.dius.pact.provider.junitsupport.loader.PactFolder;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.api.condition.EnabledIf;
@@ -31,6 +33,8 @@ import java.util.UUID;
  * that never runs is indistinguishable from one that passes, which is the worst thing a contract
  * test can be.
  */
+@Epic("Contract")
+@Feature("Purge verdicts")
 @Provider("microservice-offboarding")
 @PactFolder(SecurityOutcomePactProviderTest.PACT_FOLDER)
 @EnabledIf(value = "pactCheckedOut",

@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.infrastructure;
 
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.apache.kafka.clients.consumer.MockConsumer;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.apache.kafka.common.PartitionInfo;
@@ -29,6 +31,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * therefore shields only the interrupt: each probe shields exactly the signals its own shutdown
  * can deliver, which is what "symmetric" means here.
  */
+@Epic("Infrastructure")
+@Feature("Readiness probe")
 class ProbeShutdownShieldTest {
 
     private final RouterFixture fixture = RouterFixture.router();

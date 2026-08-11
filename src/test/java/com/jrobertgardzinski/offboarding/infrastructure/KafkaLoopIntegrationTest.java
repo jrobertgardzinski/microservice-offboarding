@@ -6,6 +6,8 @@ import com.jrobertgardzinski.offboarding.application.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.application.RecordConfirmation;
 import com.jrobertgardzinski.offboarding.application.SagaStore;
 import com.jrobertgardzinski.offboarding.application.SweepOverdue;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AlterConfigOp;
 import org.apache.kafka.clients.admin.ConfigEntry;
@@ -71,6 +73,8 @@ import static org.junit.jupiter.api.Assertions.fail;
  * loops' subscriptions disjoint, and per-test emails keep the shared command/outcome topics
  * readable. Skipped where docker is absent, like memes' MinIO round-trip.
  */
+@Epic("Infrastructure")
+@Feature("Kafka transport")
 @Testcontainers(disabledWithoutDocker = true)
 class KafkaLoopIntegrationTest {
 

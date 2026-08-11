@@ -7,6 +7,9 @@ import au.com.dius.pact.provider.junit5.PactVerificationContext;
 import au.com.dius.pact.provider.junit5.PactVerificationInvocationContextProvider;
 import au.com.dius.pact.provider.junitsupport.Provider;
 import au.com.dius.pact.provider.junitsupport.loader.PactFolder;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
+import io.qameta.allure.Story;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.api.condition.EnabledIf;
@@ -17,6 +20,9 @@ import java.nio.file.Path;
 import java.util.List;
 
 /** The user-collections twin of the memes command provider test. */
+@Epic("Contract")
+@Feature("Purge commands")
+@Story("User collections")
 @Provider("microservice-offboarding")
 @PactFolder("../microservice-user-collections/pacts")
 @EnabledIf(value = "pactCheckedOut",

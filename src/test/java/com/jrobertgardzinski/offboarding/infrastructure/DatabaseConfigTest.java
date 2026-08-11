@@ -1,6 +1,8 @@
 package com.jrobertgardzinski.offboarding.infrastructure;
 
 import com.zaxxer.hikari.HikariConfig;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -16,6 +18,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * lock. So this pins the properties on the config Hikari is handed — a constant nobody passes on
  * is worth nothing, and the floor in {@link Main} is derived from these same values.
  */
+@Epic("Infrastructure")
+@Feature("Database timeouts")
 class DatabaseConfigTest {
 
     private static final String POSTGRES = "jdbc:postgresql://offboarding-postgres:5432/offboarding";

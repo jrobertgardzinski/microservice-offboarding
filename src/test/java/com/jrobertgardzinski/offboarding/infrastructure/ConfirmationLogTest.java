@@ -3,6 +3,8 @@ package com.jrobertgardzinski.offboarding.infrastructure;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,6 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * two events need two lines. Logback is already this service's logger, so the assertion needs no
  * new dependency, only an appender on the router's own logger.
  */
+@Epic("Infrastructure")
+@Feature("Confirmation log lines")
 class ConfirmationLogTest {
 
     private static final String LEAVER = "leaver@example.com";

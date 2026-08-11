@@ -81,5 +81,12 @@ Env: `OFFBOARDING_PORT` (8094), `OFFBOARDING_FACTS_TOPIC` (security-events),
 `KAFKA_BOOTSTRAP_SERVERS` (absent = the loop never runs), `DB_URL`/`DB_USER`/`DB_PASSWORD`
 (absent = in-memory H2).
 
+## Documentation
+
+- [`specs/`](./specs) — the executable specifications: Gherkin, one file per use case (begin,
+  record, sweep), driven through the real router by every build.
+- [`Documentation.md`](./Documentation.md) — the epic → feature → story tree, generated from the
+  test suite's Allure reports; regenerate with `../create-documentation.sh` after `./mvnw clean test`.
+
 Part of a [portfolio of microservices](https://github.com/jrobertgardzinski); the deployment and
 the C4 diagrams live in the workspace repo.

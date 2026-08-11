@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.infrastructure;
 
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -29,6 +31,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * content participants sit next to this repo inside {@code portal/}; security sits one level up in
  * {@code shared/}, and that asymmetry is precisely what the flat CI layout flattened away.
  */
+@Epic("Contract")
+@Feature("Honest pact skips")
 class SilentlySkippedPactTest {
 
     /** Relative to the REPO directory, which is what surefire makes the working directory. */

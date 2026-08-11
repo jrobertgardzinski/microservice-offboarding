@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.infrastructure;
 
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -28,6 +30,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * microservice-comments' {@code KafkaCommentEvents} and microservice-memes' {@code KafkaMemeEvents}
  * (the shape is pinned on their side by their own tests; here only its FATE is pinned).
  */
+@Epic("Saga")
+@Feature("Cascade traffic isolation")
 class SharedTopicCascadeTrafficTest {
 
     private static final String LEAVER = "leaver@example.com";

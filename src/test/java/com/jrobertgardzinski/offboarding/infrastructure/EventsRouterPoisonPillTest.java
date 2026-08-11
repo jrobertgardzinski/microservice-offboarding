@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.infrastructure;
 
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -15,6 +17,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * cannot possibly route — a fact without a usable replay key, anything without an email — go the
  * way of malformed JSON: one WARN line, no saga touched, life goes on.
  */
+@Epic("Infrastructure")
+@Feature("Poison pills")
 class EventsRouterPoisonPillTest {
 
     @Test

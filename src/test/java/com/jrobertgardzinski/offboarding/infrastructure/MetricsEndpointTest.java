@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.infrastructure;
 
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -11,6 +13,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * fighting (retries flowing) from a timeout path in real trouble (sweeps dying). The counters are
  * process-global, so the assertions read deltas, never absolutes.
  */
+@Epic("Infrastructure")
+@Feature("Progress metrics")
 class MetricsEndpointTest {
 
     @Test

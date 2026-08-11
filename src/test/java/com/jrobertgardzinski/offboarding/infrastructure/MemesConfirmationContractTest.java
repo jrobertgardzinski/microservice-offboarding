@@ -9,6 +9,9 @@ import au.com.dius.pact.core.model.PactSpecVersion;
 import au.com.dius.pact.core.model.annotations.Pact;
 import au.com.dius.pact.core.model.messaging.Message;
 import au.com.dius.pact.core.model.messaging.MessagePact;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
+import io.qameta.allure.Story;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -24,6 +27,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * NAME comes from the topic, exactly as it did when security orchestrated. Proven by driving the
  * real router; verified against memes' real confirmation-building code by its provider test.
  */
+@Epic("Contract")
+@Feature("Purge confirmations")
+@Story("Memes")
 @ExtendWith(PactConsumerTestExt.class)
 @PactTestFor(providerName = "microservice-memes", providerType = ProviderType.ASYNCH,
         pactVersion = PactSpecVersion.V3)

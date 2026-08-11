@@ -3,6 +3,8 @@ package com.jrobertgardzinski.offboarding.infrastructure;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jrobertgardzinski.offboarding.application.SagaStore;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -21,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * an unreadable stored policy, while a policy within the cap keeps riding verbatim. Either way
  * the saga itself must open: the cap drops the baggage, never the deletion.
  */
+@Epic("Infrastructure")
+@Feature("Policy size cap")
 class EventsRouterPolicyCapTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();

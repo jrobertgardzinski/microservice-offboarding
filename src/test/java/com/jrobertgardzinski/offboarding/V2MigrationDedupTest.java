@@ -1,5 +1,8 @@
 package com.jrobertgardzinski.offboarding;
 
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
+import io.qameta.allure.Story;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 
@@ -30,6 +33,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * can produce any more, then {@code target("2")} — on a fresh H2 (PG mode) per test, exactly
  * the engine the dev profile migrates.
  */
+@Epic("Infrastructure")
+@Feature("Schema migrations")
+@Story("V2 dedup of forked sagas")
 class V2MigrationDedupTest {
 
     private static final Instant T0 = Instant.parse("2026-07-11T12:00:00Z");

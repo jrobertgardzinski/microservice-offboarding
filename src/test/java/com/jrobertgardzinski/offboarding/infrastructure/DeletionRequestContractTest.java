@@ -9,6 +9,8 @@ import au.com.dius.pact.core.model.PactSpecVersion;
 import au.com.dius.pact.core.model.annotations.Pact;
 import au.com.dius.pact.core.model.messaging.Message;
 import au.com.dius.pact.core.model.messaging.MessagePact;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -27,6 +29,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * security's REAL fact-producing code by its provider tests. Tolerant reader: security may add
  * fields freely.
  */
+@Epic("Contract")
+@Feature("Deletion request")
 @ExtendWith(PactConsumerTestExt.class)
 @PactTestFor(providerName = "microservice-security", providerType = ProviderType.ASYNCH,
         pactVersion = PactSpecVersion.V3)

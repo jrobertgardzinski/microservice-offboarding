@@ -4,6 +4,8 @@ import com.jrobertgardzinski.offboarding.application.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.application.RecordConfirmation;
 import com.jrobertgardzinski.offboarding.application.SweepOverdue;
 import com.jrobertgardzinski.offboarding.infrastructure.InMemorySagaStore;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 
@@ -26,6 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * ANSWERS may differ between runs — the completion is announced exactly once by design — but the
  * saga STATE may not.) A new command joins the law by joining COMMANDS below.
  */
+@Epic("Use case")
+@Feature("Idempotent commands")
 class IdempotentCommandsTest {
 
     private static final Set<String> PARTICIPANTS = Set.of("memes", "comments", "collections");

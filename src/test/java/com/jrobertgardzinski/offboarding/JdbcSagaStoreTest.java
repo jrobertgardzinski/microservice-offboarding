@@ -3,6 +3,8 @@ package com.jrobertgardzinski.offboarding;
 import com.jrobertgardzinski.offboarding.application.SagaStore;
 import com.jrobertgardzinski.offboarding.infrastructure.Database;
 import com.jrobertgardzinski.offboarding.infrastructure.JdbcSagaStore;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -33,6 +35,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * sweep, the outbox flag, and the retention window — plus the V2 UNIQUE constraints under
  * genuine thread races.
  */
+@Epic("Infrastructure")
+@Feature("Saga store")
 class JdbcSagaStoreTest {
 
     private static final Set<String> THREE = Set.of("memes", "comments", "collections");

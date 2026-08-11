@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jrobertgardzinski.offboarding.application.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.application.RecordConfirmation;
 import com.jrobertgardzinski.offboarding.application.SweepOverdue;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
@@ -26,6 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * survive a crash between the state flip and the producer flush (the redelivery-after-COMPLETED
  * guarantee).
  */
+@Epic("Saga")
+@Feature("Outcome outbox")
 class OutcomeOutboxTest {
 
     private static final String FACTS = "security-events";

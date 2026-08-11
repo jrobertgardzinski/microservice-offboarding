@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.infrastructure;
 
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -17,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * participant spec may not name a participant or a topic twice, because either repeat shrinks the
  * set of confirmations the saga waits for and buys a premature PORTAL_CONTENT_PURGED.
  */
+@Epic("Config")
+@Feature("Boot-time validation")
 class MainConfigTest {
 
     @Test
