@@ -136,6 +136,7 @@ public final class Main {
     }
 
     public static void main(String[] args) {
+        ProfileGuard.requireDeclaredProfile("OFFBOARDING_PROFILE", System.getenv("OFFBOARDING_PROFILE"));
         // every numeric env is range-checked at boot: a port outside 1-65535, a negative retry
         // budget or a non-positive timeout cannot mean anything the operator intended, and
         // refusing with the variable's name and value beats booting into quiet nonsense. The
