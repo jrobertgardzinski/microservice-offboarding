@@ -27,21 +27,30 @@ public class InMemorySagaStore implements SagaStore {
         /** The mini-outbox flag: set only after the outcome demonstrably reached the broker. */
         public boolean announced;
         public int retries;
-        /** The leaver's choices as stored at start — verbatim JSON, or null (see V3). */
-        public final String policy;
+        /** The leaver's choices as stored at start — verbatim JSON, or null (see V3). Not final:
+         *  an ADMIN's case that the account's own owner then asks for loses its conditions. */
+        public String policy;
         /** Security's handle on the deletion, echoed by the verdict — null when none (see V5). */
         public UUID securitySagaId;
         /** The quorum this saga opened with, or null when none was recorded (see V6). */
         public final Set<String> requiredParticipants;
+        /** Who asked for the closure — decides whether the policy may be honoured (see V7). */
+        public String initiatedBy;
 
         Saga(UUID factId, String email, String policy, UUID securitySagaId,
              Set<String> requiredParticipants, Instant createdAt) {
             this(UUID.randomUUID(), factId, email, policy, securitySagaId, requiredParticipants,
-                    createdAt);
+                    createdAt, null);
         }
 
         Saga(UUID id, UUID factId, String email, String policy, UUID securitySagaId,
              Set<String> requiredParticipants, Instant createdAt) {
+            this(id, factId, email, policy, securitySagaId, requiredParticipants, createdAt, null);
+        }
+
+        Saga(UUID id, UUID factId, String email, String policy, UUID securitySagaId,
+             Set<String> requiredParticipants, Instant createdAt, String initiatedBy) {
+            this.initiatedBy = initiatedBy;
             this.id = id;
             this.factId = factId;
             this.email = email;
@@ -74,10 +83,18 @@ public class InMemorySagaStore implements SagaStore {
             if (opening.securitySagaId() != null) {
                 running.get().securitySagaId = opening.securitySagaId();
             }
+            // and the one other thing a joining fact may change: an administrator's closure that
+            // the OWNER then asks for themselves becomes the owner's, conditions dropped. Only
+            // ever ADMIN → SELF; mirrors the JDBC adapter (see JdbcSagaStore#adoptSelfRequest)
+            if (EventsRouter.BY_SELF.equals(opening.initiatedBy())
+                    && EventsRouter.BY_ADMIN.equals(running.get().initiatedBy)) {
+                running.get().initiatedBy = EventsRouter.BY_SELF;
+                running.get().policy = null;
+            }
             return running.get().id;
         }
-        Saga saga = new Saga(opening.factId(), opening.email(), opening.policy(),
-                opening.securitySagaId(), opening.participants(), at);
+        Saga saga = new Saga(UUID.randomUUID(), opening.factId(), opening.email(), opening.policy(),
+                opening.securitySagaId(), opening.participants(), at, opening.initiatedBy());
         sagas.put(saga.id, saga);
         return saga.id;
     }
@@ -102,9 +119,9 @@ public class InMemorySagaStore implements SagaStore {
                 saga.updatedAt = at;
                 // the policy rides back out with the completing confirmation: the caller sends
                 // the CLOSURE command next, and that is what carries it to the participants
-                return new Recorded(saga.id, saga.securitySagaId, true, saga.policy);
+                return new Recorded(saga.id, saga.securitySagaId, true, saga.policy, saga.initiatedBy);
             }
-            return new Recorded(saga.id, saga.securitySagaId, false, saga.policy);
+            return new Recorded(saga.id, saga.securitySagaId, false, saga.policy, saga.initiatedBy);
         });
     }
 
@@ -129,7 +146,7 @@ public class InMemorySagaStore implements SagaStore {
                     // a candidate, not a charge: retryDelivered() moves the counter once the
                     // re-command reached the broker — mirrors the JDBC adapter. The stored
                     // policy rides along so the re-command repeats the original
-                    retries.add(new Retry(saga.id, saga.email, saga.policy));
+                    retries.add(new Retry(saga.id, saga.email, saga.policy, saga.initiatedBy));
                 } else {
                     saga.state = "COMPENSATED";
                     saga.updatedAt = at;
@@ -168,7 +185,7 @@ public class InMemorySagaStore implements SagaStore {
                 .filter(saga -> saga.finished() && !saga.announced && saga.updatedAt.isBefore(olderThan))
                 .map(saga -> new PendingOutcome(saga.id, saga.email, saga.state,
                         "COMPENSATED".equals(saga.state) ? Set.copyOf(saga.confirmed) : Set.<String>of(),
-                        saga.securitySagaId, saga.policy))
+                        saga.securitySagaId, saga.policy, saga.initiatedBy))
                 .toList();
     }
 

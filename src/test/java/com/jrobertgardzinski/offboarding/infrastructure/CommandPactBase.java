@@ -25,7 +25,7 @@ public final class CommandPactBase {
     public static String realPurgeCommandWithPolicy() {
         return RouterFixture.router().router.handle(RouterFixture.FACTS_TOPIC,
                         "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                                + "\"email\":\"leaver@example.com\","
+                                + "\"email\":\"leaver@example.com\",\"initiatedBy\":\"ADMIN\","
                                 + "\"policy\":{\"memes\":\"KEEP_POPULAR_ANONYMIZED:5\",\"comments\":\"DELETE\"},"
                                 + "\"version\":1}")
                 .get(0).payload();
@@ -35,14 +35,16 @@ public final class CommandPactBase {
      * The CLOSURE, produced the only way the router ever produces one: every required participant
      * confirms, and the last confirmation emits it. The policy the fact carried is ferried back
      * out on it — the participants apply their rule at erasure time, which is why the closure and
-     * not the mark is what needs it.
+     * not the mark is what needs it. The fact is an ADMINISTRATOR's, because that is the only
+     * closure whose rule a participant may honour: a self-requested one destroys regardless.
      */
     public static String realEraseCommand() {
         RouterFixture fixture = RouterFixture.router();
         fixture.router.handle(RouterFixture.FACTS_TOPIC,
                 "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                        + "\"email\":\"leaver@example.com\","
-                        + "\"policy\":{\"memes\":\"DELETE\",\"comments\":\"ANONYMIZE_AUTHOR\"},"
+                        + "\"email\":\"leaver@example.com\",\"initiatedBy\":\"ADMIN\","
+                        + "\"policy\":{\"memes\":\"KEEP_POPULAR_ANONYMIZED:100\","
+                        + "\"comments\":\"ANONYMIZE_AUTHOR\"},"
                         + "\"version\":1}");
         List<EventsRouter.Outgoing> out = List.of();
         for (String topic : RouterFixture.PARTICIPANT_BY_TOPIC.keySet()) {

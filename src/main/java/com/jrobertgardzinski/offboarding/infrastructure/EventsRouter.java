@@ -43,6 +43,19 @@ public class EventsRouter {
     public static final String OUTCOMES_TOPIC = "offboarding-events";
 
     /**
+     * The basis a closure was requested under, as it travels from security's fact onto every
+     * command this orchestrator sends. Only {@link #BY_ADMIN} lets a participant honour the policy
+     * riding beside it; everything else — a missing field, an unknown word, a saga opened before
+     * the column existed — reads as {@link #BY_SELF}, and a self-closure destroys.
+     *
+     * <p>The normalisation happens HERE rather than three times over in the content services: this
+     * is the one place that sees the fact, and a garbage value is a producer's mistake, not a
+     * licence to keep somebody's content after they asked to be forgotten.
+     */
+    public static final String BY_SELF = "SELF";
+    public static final String BY_ADMIN = "ADMIN";
+
+    /**
      * The three commands this orchestrator sends its participants, and the whole reason the saga
      * has a compensation worth the name.
      *
@@ -170,7 +183,8 @@ public class EventsRouter {
             // fall back to the participants' defaults. countsRetryFor makes the loop charge
             // the retry counter only once this command is proven delivered — an undeliverable
             // re-command burns nothing and the next sweep simply offers the candidate again
-            out.add(purgeRetryCommand(retry.sagaId(), retry.email(), retry.policy()));
+            out.add(purgeRetryCommand(retry.sagaId(), retry.email(), retry.policy(),
+                    retry.initiatedBy()));
         }
         for (SagaStore.Compensated failed : swept.compensated()) {
             LOG.warn("portal purge overdue for {} despite the retries; compensating and announcing "
@@ -180,7 +194,10 @@ public class EventsRouter {
             // participants learnt to mark instead of destroy, "compensated" meant nothing but an
             // apology — the content was already gone. It is sent to every participant, not only to
             // the ones that confirmed: a mark whose confirmation was lost is still a mark
-            out.add(participantCommand(RESTORE_COMMAND, failed.sagaId(), failed.email(), null));
+            // no policy and no basis: putting content BACK applies no rule, so neither field
+            // has anything to decide here (the payload states SELF, the safe reading of null)
+            out.add(participantCommand(RESTORE_COMMAND, failed.sagaId(), failed.email(), null,
+                    null));
             out.add(outcome("PORTAL_PURGE_FAILED", failed.email(), failed.sagaId(),
                     failed.securitySagaId(), failed.confirmed()));
         }
@@ -198,7 +215,8 @@ public class EventsRouter {
             // whereas losing a closure leaves content hidden for ever and nobody the wiser
             boolean completed = "COMPLETED".equals(pending.state());
             out.add(participantCommand(completed ? ERASE_COMMAND : RESTORE_COMMAND,
-                    pending.sagaId(), pending.email(), completed ? pending.policy() : null));
+                    pending.sagaId(), pending.email(), completed ? pending.policy() : null,
+                    pending.initiatedBy()));
             out.add(completed
                     ? outcome("PORTAL_CONTENT_PURGED", pending.email(), pending.sagaId(),
                     pending.securitySagaId(), null)
@@ -242,6 +260,10 @@ public class EventsRouter {
                 return List.of();
             }
         }
+        // who asked, normalised: anything that is not exactly ADMIN is the account's own owner,
+        // which is also the honest reading of a fact from before the field existed — until then
+        // security had one deletion route and only the owner could walk it
+        String initiatedBy = BY_ADMIN.equals(fact.path("initiatedBy").asText()) ? BY_ADMIN : BY_SELF;
         // the policy is stored with the saga (verbatim, only when it is the object the command
         // would carry) so the sweeper's re-command can repeat the original command — capped at
         // MAX_POLICY_BYTES: an oversized blob is dropped from the saga AND the command alike
@@ -259,8 +281,8 @@ public class EventsRouter {
             policy = null;
             storedPolicy = null;
         }
-        BeginOffboarding.Begun begun =
-                begin.execute(factId, email, storedPolicy, securitySagaId, Instant.now(clock));
+        BeginOffboarding.Begun begun = begin.execute(factId, email, storedPolicy, securitySagaId,
+                initiatedBy, Instant.now(clock));
         if (begun.nothingToPurge()) {
             if (!begun.completedNow()) {
                 // the once-latch said no: this fact is a replay and the saga finished long ago.
@@ -275,8 +297,9 @@ public class EventsRouter {
             return List.of(outcome("PORTAL_CONTENT_PURGED", email, begun.sagaId(),
                     securitySagaId, null));
         }
-        LOG.info("commanding the content purge for {} (saga {})", masked(email), begun.sagaId());
-        return List.of(purgeCommand(begun.sagaId(), email, policy));
+        LOG.info("commanding the content purge for {} (saga {}, requested by {})", masked(email),
+                begun.sagaId(), initiatedBy);
+        return List.of(purgeCommand(begun.sagaId(), email, policy, initiatedBy));
     }
 
     private List<Outgoing> onConfirmation(JsonNode confirmation, String participant) {
@@ -331,13 +354,14 @@ public class EventsRouter {
         // half-published pair is simply re-published by the next sweep.
         return List.of(
                 participantCommand(ERASE_COMMAND, landed.get().sagaId(), email,
-                        landed.get().policy()),
+                        landed.get().policy(), landed.get().initiatedBy()),
                 outcome("PORTAL_CONTENT_PURGED", email, landed.get().sagaId(),
                         landed.get().securitySagaId(), null));
     }
 
-    private Outgoing purgeCommand(UUID sagaId, String email, JsonNode policy) {
-        return new Outgoing(COMMANDS_TOPIC, email, commandPayload(MARK_COMMAND, sagaId, email, policy));
+    private Outgoing purgeCommand(UUID sagaId, String email, JsonNode policy, String initiatedBy) {
+        return new Outgoing(COMMANDS_TOPIC, email,
+                commandPayload(MARK_COMMAND, sagaId, email, policy, initiatedBy));
     }
 
     /**
@@ -353,9 +377,11 @@ public class EventsRouter {
      * <p>{@code partOfSaga} rather than {@code announcesSaga}: this event does not announce the
      * outcome, but it must share the outcome's fate at the outbox (see {@link Outgoing#command}).
      */
-    private Outgoing participantCommand(String type, UUID sagaId, String email, String storedPolicy) {
+    private Outgoing participantCommand(String type, UUID sagaId, String email, String storedPolicy,
+                                        String initiatedBy) {
         return Outgoing.command(COMMANDS_TOPIC, email,
-                commandPayload(type, sagaId, email, storedPolicy(sagaId, storedPolicy)), sagaId);
+                commandPayload(type, sagaId, email, storedPolicy(sagaId, storedPolicy), initiatedBy),
+                sagaId);
     }
 
     /**
@@ -364,9 +390,11 @@ public class EventsRouter {
      * saga — plus the {@code countsRetryFor} mark that lets the loop charge the retry counter
      * only after the broker demonstrably accepted it.
      */
-    private Outgoing purgeRetryCommand(UUID sagaId, String email, String storedPolicy) {
+    private Outgoing purgeRetryCommand(UUID sagaId, String email, String storedPolicy,
+                                       String initiatedBy) {
         return new Outgoing(COMMANDS_TOPIC, email,
-                commandPayload(MARK_COMMAND, sagaId, email, storedPolicy(sagaId, storedPolicy)),
+                commandPayload(MARK_COMMAND, sagaId, email, storedPolicy(sagaId, storedPolicy),
+                        initiatedBy),
                 null, sagaId);
     }
 
@@ -385,12 +413,18 @@ public class EventsRouter {
         }
     }
 
-    private String commandPayload(String type, UUID sagaId, String email, JsonNode policy) {
+    private String commandPayload(String type, UUID sagaId, String email, JsonNode policy,
+                                  String initiatedBy) {
         ObjectNode command = mapper.createObjectNode()
                 .put("id", UUID.randomUUID().toString())
                 .put("sagaId", sagaId.toString())
                 .put("type", type)
                 .put("email", email)
+                // the basis, on ALL THREE commands and not only on the one that applies a rule:
+                // one envelope, so a participant routes them from a single listener and an
+                // operator reading the topic sees one conversation. Null for a saga opened before
+                // the column existed, which the participants read exactly as SELF
+                .put("initiatedBy", initiatedBy == null ? BY_SELF : initiatedBy)
                 // envelope version (workspace ADR 0004): fields only ever added within version 1
                 .put("version", 1);
         if (policy != null && policy.isObject()) {

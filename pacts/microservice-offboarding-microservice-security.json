@@ -7,6 +7,7 @@
       "contents": {
         "email": "leaver@example.com",
         "id": "e2490de5-5bd3-43d5-b7c4-526e33f71304",
+        "initiatedBy": "SELF",
         "sagaId": "e2490de5-5bd3-43d5-b7c4-526e33f71304",
         "type": "ACCOUNT_DELETION_REQUESTED"
       },
@@ -59,9 +60,10 @@
       "contents": {
         "email": "leaver@example.com",
         "id": "e2490de5-5bd3-43d5-b7c4-526e33f71304",
+        "initiatedBy": "ADMIN",
         "policy": {
           "comments": "ANONYMIZE_AUTHOR",
-          "memes": "DELETE"
+          "memes": "KEEP_POPULAR_ANONYMIZED:100"
         },
         "sagaId": "e2490de5-5bd3-43d5-b7c4-526e33f71304",
         "type": "ACCOUNT_DELETION_REQUESTED"

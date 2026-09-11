@@ -36,7 +36,13 @@ public interface SagaStore {
      * and then completeness falls back to the caller's configuration, exactly as it used to.
      */
     record Opening(UUID factId, String email, String policy, UUID securitySagaId,
-                   Set<String> participants) {
+                   Set<String> participants, String initiatedBy) {
+
+        /** The pre-initiator spelling, for callers and tests with no basis to record. */
+        public Opening(UUID factId, String email, String policy, UUID securitySagaId,
+                       Set<String> participants) {
+            this(factId, email, policy, securitySagaId, participants, null);
+        }
     }
 
     /**
@@ -49,11 +55,17 @@ public interface SagaStore {
      * participants — they apply their rule at erasure time, so the last confirmation is exactly
      * when that policy is needed again.
      */
-    record Recorded(UUID sagaId, UUID securitySagaId, boolean completedSaga, String policy) {
+    record Recorded(UUID sagaId, UUID securitySagaId, boolean completedSaga, String policy,
+                    String initiatedBy) {
 
         /** The pre-closure spelling, for callers and tests that have no policy to carry. */
         public Recorded(UUID sagaId, UUID securitySagaId, boolean completedSaga) {
-            this(sagaId, securitySagaId, completedSaga, null);
+            this(sagaId, securitySagaId, completedSaga, null, null);
+        }
+
+        /** The pre-initiator spelling. */
+        public Recorded(UUID sagaId, UUID securitySagaId, boolean completedSaga, String policy) {
+            this(sagaId, securitySagaId, completedSaga, policy, null);
         }
     }
 
@@ -62,9 +74,13 @@ public interface SagaStore {
      * leaver's choices as stored at start — the verbatim JSON object, or null when the fact
      * carried none — so the re-command can repeat the original command instead of a bare default.
      */
-    record Retry(UUID sagaId, String email, String policy) {
+    record Retry(UUID sagaId, String email, String policy, String initiatedBy) {
         public Retry(UUID sagaId, String email) {
-            this(sagaId, email, null);
+            this(sagaId, email, null, null);
+        }
+
+        public Retry(UUID sagaId, String email, String policy) {
+            this(sagaId, email, policy, null);
         }
     }
 
@@ -91,14 +107,19 @@ public interface SagaStore {
      * command and the outcome are published — and withheld — together.
      */
     record PendingOutcome(UUID sagaId, String email, String state, Set<String> confirmed,
-                          UUID securitySagaId, String policy) {
+                          UUID securitySagaId, String policy, String initiatedBy) {
         public PendingOutcome(UUID sagaId, String email, String state, Set<String> confirmed) {
-            this(sagaId, email, state, confirmed, null, null);
+            this(sagaId, email, state, confirmed, null, null, null);
         }
 
         public PendingOutcome(UUID sagaId, String email, String state, Set<String> confirmed,
                               UUID securitySagaId) {
-            this(sagaId, email, state, confirmed, securitySagaId, null);
+            this(sagaId, email, state, confirmed, securitySagaId, null, null);
+        }
+
+        public PendingOutcome(UUID sagaId, String email, String state, Set<String> confirmed,
+                              UUID securitySagaId, String policy) {
+            this(sagaId, email, state, confirmed, securitySagaId, policy, null);
         }
     }
 

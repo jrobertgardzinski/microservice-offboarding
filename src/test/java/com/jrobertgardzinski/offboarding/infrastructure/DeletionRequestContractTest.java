@@ -46,7 +46,11 @@ class DeletionRequestContractTest {
                         // verdict, so security can settle THE request this verdict is about
                         // instead of matching it to the address
                         .uuid("sagaId")
-                        .stringType("email", "leaver@example.com"))
+                        .stringType("email", "leaver@example.com")
+                        // WHO asked, which is what this consumer ferries onto every command it
+                        // sends: the content services honour a rule only for an administrator's
+                        // closure, and read anything else as the account owner's own request
+                        .stringValue("initiatedBy", "SELF"))
                 .toPact();
     }
 
@@ -61,8 +65,11 @@ class DeletionRequestContractTest {
                         // instead of matching it to the address
                         .uuid("sagaId")
                         .stringType("email", "leaver@example.com")
+                        // ADMIN, because an administrator's is the only closure that states
+                        // choices at all — security drops a leaver's before the fact is built
+                        .stringValue("initiatedBy", "ADMIN")
                         .object("policy")
-                        .stringType("memes", "DELETE")
+                        .stringType("memes", "KEEP_POPULAR_ANONYMIZED:100")
                         .stringType("comments", "ANONYMIZE_AUTHOR")
                         .closeObject())
                 .toPact();
@@ -77,6 +84,8 @@ class DeletionRequestContractTest {
         assertEquals(1, out.size());
         assertEquals(EventsRouter.COMMANDS_TOPIC, out.get(0).topic());
         assertTrue(out.get(0).payload().contains("\"PURGE_USER_CONTENT\""));
+        assertTrue(out.get(0).payload().contains("\"initiatedBy\":\"SELF\""),
+                "the basis rides every command, not only the closure: " + out.get(0).payload());
     }
 
     @Test
@@ -87,5 +96,7 @@ class DeletionRequestContractTest {
                 fixture.router.handle(RouterFixture.FACTS_TOPIC, messages.get(0).contentsAsString());
         assertEquals(1, out.size());
         assertTrue(out.get(0).payload().contains("\"policy\""), "the choices must be ferried");
+        assertTrue(out.get(0).payload().contains("\"initiatedBy\":\"ADMIN\""),
+                "and so must the basis that licenses them: " + out.get(0).payload());
     }
 }

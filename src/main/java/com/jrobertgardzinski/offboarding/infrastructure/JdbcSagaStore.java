@@ -63,14 +63,16 @@ public class JdbcSagaStore implements SagaStore {
                     // previous saga finished, so the older handle names a closed case and a
                     // verdict echoing it would land nowhere
                     adoptSecurityHandle(connection, running.get(), opening.securitySagaId());
+                    adoptSelfRequest(connection, running.get(), opening.initiatedBy());
                     return running.get().id();
                 }
                 UUID id = UUID.randomUUID();
                 try (PreparedStatement insert = connection.prepareStatement(
                         "INSERT INTO offboarding_sagas "
                                 + "(id, fact_id, email, running_email, state, policy, "
-                                + "security_saga_id, required_participants, created_at, updated_at) "
-                                + "VALUES (?, ?, ?, ?, 'STARTED', ?, ?, ?, ?, ?)")) {
+                                + "security_saga_id, required_participants, initiated_by, "
+                                + "created_at, updated_at) "
+                                + "VALUES (?, ?, ?, ?, 'STARTED', ?, ?, ?, ?, ?, ?)")) {
                     insert.setObject(1, id);
                     insert.setObject(2, opening.factId());
                     insert.setString(3, opening.email());
@@ -78,8 +80,9 @@ public class JdbcSagaStore implements SagaStore {
                     insert.setString(5, opening.policy());  // the leaver's choices, verbatim (V3)
                     insert.setObject(6, opening.securitySagaId());   // security's handle (V5)
                     insert.setString(7, joined(opening.participants()));   // the quorum (V6)
-                    insert.setTimestamp(8, Timestamp.from(at));
+                    insert.setString(8, opening.initiatedBy());   // the legal basis (V7)
                     insert.setTimestamp(9, Timestamp.from(at));
+                    insert.setTimestamp(10, Timestamp.from(at));
                     insert.executeUpdate();
                     return id;
                 } catch (SQLException raced) {
@@ -147,7 +150,7 @@ public class JdbcSagaStore implements SagaStore {
             // the policy rides back out with the completing confirmation: it is what the closure
             // command carries, and this is the moment the closure is sent
             return Optional.of(new Recorded(saga, target.get().securitySagaId(), completed,
-                    target.get().policy()));
+                    target.get().policy(), target.get().initiatedBy()));
         } catch (SQLException e) {
             throw new IllegalStateException("could not record purge confirmation", e);
         }
@@ -169,7 +172,7 @@ public class JdbcSagaStore implements SagaStore {
         List<Compensated> compensated = new ArrayList<>();
         try (Connection connection = dataSource.getConnection()) {
             record Overdue(UUID id, String email, int retriesSoFar, String policy,
-                           UUID securitySagaId) {
+                           UUID securitySagaId, String initiatedBy) {
             }
             List<Overdue> overdue = new ArrayList<>();
             // updated_at, NOT created_at (V4 carries the index): the deadline is measured from the
@@ -178,14 +181,15 @@ public class JdbcSagaStore implements SagaStore {
             // the whole retry budget burned down in three sweep intervals and the failure verdict
             // overtook the re-command the participant was still working on
             try (PreparedStatement select = connection.prepareStatement(
-                    "SELECT id, email, retries, policy, security_saga_id FROM offboarding_sagas "
+                    "SELECT id, email, retries, policy, security_saga_id, initiated_by "
+                            + "FROM offboarding_sagas "
                             + "WHERE state = 'STARTED' AND updated_at < ?")) {
                 select.setTimestamp(1, Timestamp.from(cutoff));
                 try (ResultSet rows = select.executeQuery()) {
                     while (rows.next()) {
                         overdue.add(new Overdue(rows.getObject(1, UUID.class),
                                 rows.getString(2), rows.getInt(3), rows.getString(4),
-                                rows.getObject(5, UUID.class)));
+                                rows.getObject(5, UUID.class), rows.getString(6)));
                     }
                 }
             }
@@ -197,7 +201,8 @@ public class JdbcSagaStore implements SagaStore {
                     // Counting here would let a dead broker burn all retries without a single
                     // command on the wire, and the saga would compensate having never re-asked.
                     // The stored policy rides along so the re-command repeats the original
-                    retries.add(new Retry(saga.id(), saga.email(), saga.policy()));
+                    retries.add(new Retry(saga.id(), saga.email(), saga.policy(),
+                            saga.initiatedBy()));
                 } else {
                     // retries exhausted — give up, freeing the email for a future saga, and tell
                     // the caller who DID confirm so the failure can name the partial purge
@@ -261,7 +266,8 @@ public class JdbcSagaStore implements SagaStore {
         List<PendingOutcome> pending = new ArrayList<>();
         try (Connection connection = dataSource.getConnection()) {
             try (PreparedStatement select = connection.prepareStatement(
-                    "SELECT id, email, state, security_saga_id, policy FROM offboarding_sagas "
+                    "SELECT id, email, state, security_saga_id, policy, initiated_by "
+                            + "FROM offboarding_sagas "
                             + "WHERE state IN ('COMPLETED', 'COMPENSATED') "
                             + "AND outcome_announced = FALSE AND updated_at < ?")) {
                 select.setTimestamp(1, Timestamp.from(olderThan));
@@ -269,7 +275,8 @@ public class JdbcSagaStore implements SagaStore {
                     while (rows.next()) {
                         pending.add(new PendingOutcome(rows.getObject(1, UUID.class),
                                 rows.getString(2), rows.getString(3), Set.of(),
-                                rows.getObject(4, UUID.class), rows.getString(5)));
+                                rows.getObject(4, UUID.class), rows.getString(5),
+                                rows.getString(6)));
                     }
                 }
             }
@@ -280,7 +287,7 @@ public class JdbcSagaStore implements SagaStore {
                 withConfirmations.add("COMPENSATED".equals(outcome.state())
                         ? new PendingOutcome(outcome.sagaId(), outcome.email(), outcome.state(),
                         confirmedParticipants(connection, outcome.sagaId()),
-                        outcome.securitySagaId(), outcome.policy())
+                        outcome.securitySagaId(), outcome.policy(), outcome.initiatedBy())
                         : outcome);
             }
             return withConfirmations;
@@ -317,17 +324,19 @@ public class JdbcSagaStore implements SagaStore {
      * saga OPENED with (empty when the row predates the column — then the caller's configuration
      * decides), security's handle on the deletion, which the verdict echoes, and the leaver's
      * stored policy, which the CLOSURE command carries back to the participants when the last
-     * confirmation lands (they apply their rule at erasure time, not at mark time).
+     * confirmation lands (they apply their rule at erasure time, not at mark time) — and the basis
+     * the closure was requested under (V7), which decides whether that rule may be honoured.
      */
     private record Target(UUID id, Optional<Set<String>> recordedParticipants,
-                          UUID securitySagaId, String policy) {
+                          UUID securitySagaId, String policy, String initiatedBy) {
     }
 
     private static Optional<Target> runningSaga(Connection connection, String email) throws SQLException {
         // running_email is the V2 latch column: set while STARTED, NULL after — so this is both
         // the lookup and the uniqueness the constraint enforces
         try (PreparedStatement select = connection.prepareStatement(
-                "SELECT id, required_participants, security_saga_id, policy FROM offboarding_sagas "
+                "SELECT id, required_participants, security_saga_id, policy, initiated_by "
+                        + "FROM offboarding_sagas "
                         + "WHERE running_email = ?")) {
             select.setString(1, email);
             return target(select);
@@ -336,7 +345,8 @@ public class JdbcSagaStore implements SagaStore {
 
     private static Optional<Target> startedSaga(Connection connection, UUID sagaId) throws SQLException {
         try (PreparedStatement select = connection.prepareStatement(
-                "SELECT id, required_participants, security_saga_id, policy FROM offboarding_sagas "
+                "SELECT id, required_participants, security_saga_id, policy, initiated_by "
+                        + "FROM offboarding_sagas "
                         + "WHERE id = ? AND state = 'STARTED'")) {
             select.setObject(1, sagaId);
             return target(select);
@@ -347,7 +357,8 @@ public class JdbcSagaStore implements SagaStore {
         try (ResultSet rows = select.executeQuery()) {
             return rows.next()
                     ? Optional.of(new Target(rows.getObject(1, UUID.class),
-                    parsed(rows.getString(2)), rows.getObject(3, UUID.class), rows.getString(4)))
+                    parsed(rows.getString(2)), rows.getObject(3, UUID.class), rows.getString(4),
+                    rows.getString(5)))
                     : Optional.empty();
         }
     }
@@ -364,6 +375,37 @@ public class JdbcSagaStore implements SagaStore {
         try (PreparedStatement update = connection.prepareStatement(
                 "UPDATE offboarding_sagas SET security_saga_id = ? WHERE id = ? AND state = 'STARTED'")) {
             update.setObject(1, securitySagaId);
+            update.setObject(2, running.id());
+            update.executeUpdate();
+        }
+    }
+
+    /**
+     * The one thing a JOINING fact may change besides the handle: an administrator's closure that
+     * the account's OWNER then asks for themselves becomes the owner's, and the stored conditions
+     * go with it.
+     *
+     * <p>Everything else about a joining fact is ignored on purpose — the opening fact's policy and
+     * quorum are the case's, and a second request must not rewrite them. This is the exception
+     * because the two are not the same KIND of request. A ban may keep what the community voted up;
+     * a request from the person themselves may not, and folding that request into a running ban
+     * would answer it with "we kept your popular memes" — which is not an erasure. It only ever
+     * moves one way (ADMIN → SELF, never back), so an administrator cannot re-open conditions on a
+     * case somebody asked for themselves.
+     *
+     * <p>Safe this late because the closure is built from this row, not from the fact: the marks
+     * already sent are unconditional, and the rule is only read when the last confirmation lands.
+     */
+    private static void adoptSelfRequest(Connection connection, Target running, String initiatedBy)
+            throws SQLException {
+        if (!EventsRouter.BY_SELF.equals(initiatedBy)
+                || !EventsRouter.BY_ADMIN.equals(running.initiatedBy())) {
+            return;
+        }
+        try (PreparedStatement update = connection.prepareStatement(
+                "UPDATE offboarding_sagas SET initiated_by = ?, policy = NULL "
+                        + "WHERE id = ? AND state = 'STARTED'")) {
+            update.setString(1, EventsRouter.BY_SELF);
             update.setObject(2, running.id());
             update.executeUpdate();
         }

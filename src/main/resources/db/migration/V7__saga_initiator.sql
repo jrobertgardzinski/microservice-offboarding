@@ -1,0 +1,15 @@
+-- WHO asked for the account to be closed, and therefore under what basis the content services may
+-- act. Until now the portal knew only that a deletion was requested, so the leaver's own purge
+-- choices — "keep my popular memes, anonymised" — were honoured exactly as an administrator's
+-- would be. They are not the same thing: a person exercising their right to erasure has no say
+-- over which of their content survives it, while an administrator closing somebody else's account
+-- (a ban, house rules) is making an ordinary business decision.
+--
+-- Stored, not derived, and for the same reason the policy is (V3): the closure command is often
+-- built long after the fact has gone from the topic — by the sweeper, from this row alone — and it
+-- is the closure that carries the rule the participants apply.
+--
+-- NULL for every saga opened before this migration. The router reads a missing value as SELF,
+-- which is the honest reading rather than a cautious one: until this column existed, security had
+-- exactly one deletion route and it was the account's own owner.
+ALTER TABLE offboarding_sagas ADD COLUMN initiated_by TEXT;

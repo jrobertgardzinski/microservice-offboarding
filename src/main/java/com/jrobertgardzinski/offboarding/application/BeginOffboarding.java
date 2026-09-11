@@ -48,8 +48,19 @@ public class BeginOffboarding {
      * re-configuring the participants must not change the criterion for cases already open.
      */
     public Begun execute(UUID factId, String email, String policy, UUID securitySagaId, Instant at) {
-        UUID sagaId = sagas.start(
-                new SagaStore.Opening(factId, email, policy, securitySagaId, participants), at);
+        return execute(factId, email, policy, securitySagaId, null, at);
+    }
+
+    /**
+     * {@code initiatedBy} is the basis the closure was requested under — the data subject's own
+     * right, or an administrator's decision. It is stored with the saga for the same reason the
+     * policy is: the closure command that carries it is often built from this row alone, long
+     * after the fact has left the topic.
+     */
+    public Begun execute(UUID factId, String email, String policy, UUID securitySagaId,
+                         String initiatedBy, Instant at) {
+        UUID sagaId = sagas.start(new SagaStore.Opening(factId, email, policy, securitySagaId,
+                participants, initiatedBy), at);
         if (participants.isEmpty()) {
             return new Begun(sagaId, true, sagas.complete(email, at));
         }

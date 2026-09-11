@@ -25,6 +25,7 @@ import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -72,6 +73,40 @@ class JdbcSagaStoreTest {
         UUID first = store.start(UUID.randomUUID(), "alice@example.com", T0);
         UUID second = store.start(UUID.randomUUID(), "alice@example.com", T0.plusSeconds(5));
         assertEquals(first, second, "one running saga per account");
+    }
+
+    @Test
+    void the_owners_own_request_takes_over_an_administrators_running_closure() {
+        // an ADMIN bans somebody, keeping their popular memes; the person then asks to be
+        // forgotten themselves. Their request JOINS the running case — so the case has to become
+        // theirs, conditions and all, or the erasure they asked for answers with kept content
+        UUID banned = store.start(new SagaStore.Opening(UUID.randomUUID(), "alice@example.com",
+                "{\"memes\":\"KEEP_POPULAR_ANONYMIZED:100\"}", null, Set.of("memes"), "ADMIN"), T0);
+
+        UUID joined = store.start(new SagaStore.Opening(UUID.randomUUID(), "alice@example.com",
+                null, null, Set.of("memes"), "SELF"), T0.plusSeconds(5));
+
+        assertEquals(banned, joined, "one running saga per account");
+        SagaStore.Recorded landed = store.confirm("alice@example.com", null, "memes",
+                Set.of("memes"), T0.plusSeconds(6)).orElseThrow();
+        assertEquals("SELF", landed.initiatedBy(), "the case is the owner's now");
+        assertNull(landed.policy(), "and the administrator's conditions went with it");
+    }
+
+    @Test
+    void an_administrator_cannot_put_conditions_on_a_running_self_request() {
+        UUID own = store.start(new SagaStore.Opening(UUID.randomUUID(), "bob@example.com",
+                null, null, Set.of("memes"), "SELF"), T0);
+
+        store.start(new SagaStore.Opening(UUID.randomUUID(), "bob@example.com",
+                "{\"memes\":\"KEEP_POPULAR_ANONYMIZED:1\"}", null, Set.of("memes"), "ADMIN"),
+                T0.plusSeconds(5));
+
+        SagaStore.Recorded landed = store.confirm("bob@example.com", null, "memes",
+                Set.of("memes"), T0.plusSeconds(6)).orElseThrow();
+        assertEquals("SELF", landed.initiatedBy(), "the adoption only ever moves ADMIN -> SELF");
+        assertNull(landed.policy());
+        assertEquals(own, landed.sagaId());
     }
 
     @Test
