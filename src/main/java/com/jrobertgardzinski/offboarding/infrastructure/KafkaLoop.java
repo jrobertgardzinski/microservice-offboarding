@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.infrastructure;
 
+import com.jrobertgardzinski.offboarding.application.Observation;
+import com.jrobertgardzinski.offboarding.application.Observations;
 import com.jrobertgardzinski.offboarding.application.SagaStore;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -145,11 +147,13 @@ public class KafkaLoop {
     private Thread consumerThread;
     private Thread sweeperThread;
     private final AtomicBoolean started = new AtomicBoolean();
+    /** Where this loop STATES what it noticed; the adapter decides these are counters. */
+    private final Observations observations;
 
     public KafkaLoop(EventsRouter router, SagaStore store, Collection<String> topics,
-                     Duration sweepEvery) {
+                     Duration sweepEvery, Observations observations) {
         this(router, store, topics, sweepEvery, DELIVERY_TIMEOUT, REQUEST_TIMEOUT, MAX_BLOCK,
-                PROBE_TIMEOUT);
+                PROBE_TIMEOUT, observations);
     }
 
     /**
@@ -159,7 +163,8 @@ public class KafkaLoop {
      */
     KafkaLoop(EventsRouter router, SagaStore store, Collection<String> topics, Duration sweepEvery,
               Duration deliveryTimeout, Duration requestTimeout, Duration maxBlock,
-              Duration probeTimeout) {
+              Duration probeTimeout, Observations observations) {
+        this.observations = observations;
         this.router = router;
         this.store = store;
         this.topics = topics;
@@ -352,7 +357,7 @@ public class KafkaLoop {
                 // ERROR, matching the consumer's failed pass: an unfinished sweep is the same
                 // class of trouble (retries not offered, outcomes not re-announced), not a shrug
                 LOG.error("offboarding sweeper pass failed; retrying", infrastructure);
-                MetricsEndpoint.sweeperPassFailed();
+                observations.record(new Observation.SweepFailed());
                 backoffMs = pause(backoffMs);
             }
         }
@@ -414,7 +419,7 @@ public class KafkaLoop {
                 // metered only when the store actually charged the counter: a delivery landing
                 // on a saga that meanwhile finished is a no-op there and must be one here too,
                 // or the metric would drift ahead of the sum of retries in the store
-                MetricsEndpoint.retryDelivered();
+                observations.record(new Observation.PurgeRetryDelivered());
             }
         }
         if (firstFailure != null) {

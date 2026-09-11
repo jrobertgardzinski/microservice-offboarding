@@ -37,7 +37,8 @@ class ProbeShutdownShieldTest {
 
     private final RouterFixture fixture = RouterFixture.router();
     private final KafkaLoop loop = new KafkaLoop(
-            fixture.router, fixture.store, List.of("security-events"), Duration.ofSeconds(15));
+            fixture.router, fixture.store, List.of("security-events"), Duration.ofSeconds(15),
+            com.jrobertgardzinski.offboarding.application.Observations.SILENT);
 
     @AfterEach
     void clearTheInterruptKafkaSet() {

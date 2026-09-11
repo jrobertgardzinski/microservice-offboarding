@@ -87,6 +87,8 @@ class KafkaLoopIntegrationTest {
     /** The loop's hardcoded consumer group (see KafkaLoop.consumerProps). */
     private static final String LOOP_GROUP = "offboarding";
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** The watcher the loops under test state their facts to — and the one /metrics reads. */
+    private final ExportedObservations observations = new ExportedObservations();
     private static final Duration GENEROUS = Duration.ofSeconds(30);
 
     private static KafkaProducer<String, String> testProducer;
@@ -343,8 +345,8 @@ class KafkaLoopIntegrationTest {
     }
 
     /** The current offboarding_retries_delivered_total, read off the exposition text. */
-    private static long retriesDeliveredMetric() {
-        for (String line : MetricsEndpoint.body().split("\n")) {
+    private long retriesDeliveredMetric() {
+        for (String line : new MetricsEndpoint(observations).body().split("\n")) {
             if (line.startsWith("offboarding_retries_delivered_total ")) {
                 return Long.parseLong(line.substring(line.lastIndexOf(' ') + 1).trim());
             }
@@ -477,7 +479,8 @@ class KafkaLoopIntegrationTest {
                 new RecordConfirmation(store, Set.of()),
                 new SweepOverdue(store, Duration.ofMinutes(5)), MAPPER, Clock.systemUTC());
         KafkaLoop loop = new KafkaLoop(router, store, List.of(facts), Duration.ofMillis(200),
-                deliveryTimeout, Duration.ofSeconds(1), deliveryTimeout, Duration.ofSeconds(1));
+                deliveryTimeout, Duration.ofSeconds(1), deliveryTimeout, Duration.ofSeconds(1),
+                com.jrobertgardzinski.offboarding.application.Observations.SILENT);
         loop.start("localhost:1");
         loops.add(loop);
 
@@ -514,7 +517,8 @@ class KafkaLoopIntegrationTest {
                 new SweepOverdue(store, Duration.ofMinutes(5)), MAPPER, Clock.systemUTC());
         KafkaLoop loop = new KafkaLoop(router, store, List.of(facts), Duration.ofHours(1),
                 Duration.ofSeconds(2), Duration.ofSeconds(1), Duration.ofSeconds(2),
-                Duration.ofSeconds(1));   // the seam: 1s of probe patience instead of 5
+                Duration.ofSeconds(1),   // the seam: 1s of probe patience instead of 5
+                com.jrobertgardzinski.offboarding.application.Observations.SILENT);
         loop.start("localhost:1");
         loops.add(loop);
 
@@ -581,10 +585,10 @@ class KafkaLoopIntegrationTest {
         EventsRouter router = new EventsRouter(factsTopic, participantByTopic,
                 new BeginOffboarding(sagaStore, participants),
                 new RecordConfirmation(sagaStore, participants),
-                sweep, MAPPER, Clock.systemUTC());
+                sweep, MAPPER, Clock.systemUTC(), observations);
         List<String> topics = new ArrayList<>(participantByTopic.keySet());
         topics.add(factsTopic);
-        KafkaLoop loop = new KafkaLoop(router, sagaStore, topics, sweepEvery);
+        KafkaLoop loop = new KafkaLoop(router, sagaStore, topics, sweepEvery, observations);
         loop.start(KAFKA.getBootstrapServers());
         loops.add(loop);
         return loop;

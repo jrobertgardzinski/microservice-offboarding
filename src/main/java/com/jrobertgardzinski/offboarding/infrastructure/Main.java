@@ -178,18 +178,22 @@ public final class Main {
         SagaStore store = new JdbcSagaStore(dataSource);
         var participants = Map.copyOf(participantByTopic).values().stream()
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        // the composition root's one watcher: everything that states a fact is handed THIS, and
+        // /metrics reads it back out. Swap it for Observations.SILENT and the service runs
+        // unobserved rather than broken — which is the whole point of the port
+        ExportedObservations observations = new ExportedObservations();
         EventsRouter router = new EventsRouter(factsTopic, participantByTopic,
                 new BeginOffboarding(store, participants),
                 new RecordConfirmation(store, participants),
                 new SweepOverdue(store, purgeTimeout, maxPurgeRetries, republishAfter, retention),
-                new ObjectMapper(), Clock.systemUTC());
+                new ObjectMapper(), Clock.systemUTC(), observations);
 
         String bootstrap = System.getenv().getOrDefault("KAFKA_BOOTSTRAP_SERVERS", "").trim();
         KafkaLoop kafkaLoop = null;
         if (!bootstrap.isEmpty()) {
             List<String> topics = new ArrayList<>(participantByTopic.keySet());
             topics.add(factsTopic);
-            kafkaLoop = new KafkaLoop(router, store, topics, SWEEP_EVERY);
+            kafkaLoop = new KafkaLoop(router, store, topics, SWEEP_EVERY, observations);
             kafkaLoop.start(bootstrap);
         }
         KafkaLoop loop = kafkaLoop;
@@ -224,7 +228,7 @@ public final class Main {
                                 res.status(503).send("loop thread dead");
                             }
                         })
-                        .get("/metrics", MetricsEndpoint::handle))
+                        .get("/metrics", new MetricsEndpoint(observations)::handle))
                 .build()
                 .start();
 

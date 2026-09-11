@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jrobertgardzinski.offboarding.application.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.application.RecordConfirmation;
+import com.jrobertgardzinski.offboarding.application.Observation;
+import com.jrobertgardzinski.offboarding.application.Observations;
 import com.jrobertgardzinski.offboarding.application.SagaStore;
 import com.jrobertgardzinski.offboarding.application.SweepOverdue;
 import org.slf4j.Logger;
@@ -132,10 +134,25 @@ public class EventsRouter {
     private final SweepOverdue sweep;
     private final ObjectMapper mapper;
     private final Clock clock;
+    /** Where this router STATES what it noticed; the adapter decides these are counters. */
+    private final Observations observations;
 
     public EventsRouter(String factsTopic, Map<String, String> participantByTopic,
                         BeginOffboarding begin, RecordConfirmation confirm, SweepOverdue sweep,
                         ObjectMapper mapper, Clock clock) {
+        this(factsTopic, participantByTopic, begin, confirm, sweep, mapper, clock,
+                Observations.SILENT);
+    }
+
+    /**
+     * The same router with somebody listening. Kept as a second constructor rather than a required
+     * argument because the facts are the caller's to collect: every test here drives the router
+     * unwatched, which is the boundary this design promises and the cheapest possible proof of it.
+     */
+    public EventsRouter(String factsTopic, Map<String, String> participantByTopic,
+                        BeginOffboarding begin, RecordConfirmation confirm, SweepOverdue sweep,
+                        ObjectMapper mapper, Clock clock, Observations observations) {
+        this.observations = observations;
         this.factsTopic = factsTopic;
         this.participantByTopic = participantByTopic;
         this.begin = begin;
@@ -202,7 +219,7 @@ public class EventsRouter {
                     failed.securitySagaId(), failed.confirmed()));
         }
         if (!swept.compensated().isEmpty()) {
-            MetricsEndpoint.compensated(swept.compensated().size());
+            observations.record(new Observation.SagaCompensated(swept.compensated().size()));
         }
         for (SagaStore.PendingOutcome pending : swept.unannounced()) {
             LOG.info("re-announcing the {} outcome for {} (saga {}): the first announcement "
