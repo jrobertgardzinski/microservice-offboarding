@@ -70,7 +70,13 @@ jobs:
       - name: Prove the packaged service boots and answers its probes
         run: |
           cd portal/microservice-offboarding
-          OFFBOARDING_PORT=18094 java -jar target/microservice-offboarding.jar > /tmp/boot-smoke.log 2>&1 &
+          # OFFBOARDING_PROFILE is not optional since 2026-08-29 (ProfileGuard: a start nobody
+          # declared must not happen). This step had not been touched since July and passed no
+          # profile, so the guard refused every boot and the smoke reported a service that died
+          # during startup — the check that exists BECAUSE `mvn verify` cannot answer "does it
+          # run" was itself answering nothing.
+          OFFBOARDING_PROFILE=test OFFBOARDING_PORT=18094 \
+            java -jar offboarding-boundary/target/microservice-offboarding.jar > /tmp/boot-smoke.log 2>&1 &
           pid=$!
           for attempt in $(seq 1 60); do
             curl -s -o /dev/null http://localhost:18094/alive && break

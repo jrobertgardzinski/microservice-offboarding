@@ -1,0 +1,386 @@
+package com.jrobertgardzinski.offboarding.boundary;
+
+import com.jrobertgardzinski.offboarding.control.EventsRouter;
+import com.jrobertgardzinski.offboarding.control.Observations;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jrobertgardzinski.offboarding.control.BeginOffboarding;
+import com.jrobertgardzinski.offboarding.control.RecordConfirmation;
+import com.jrobertgardzinski.offboarding.control.SagaStore;
+import com.jrobertgardzinski.offboarding.control.SweepOverdue;
+import io.helidon.webserver.WebServer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.sql.DataSource;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Boots the portal's offboarding orchestrator: the participants come from CONFIGURATION
+ * ({@code OFFBOARDING_PARTICIPANTS}, {@code name=confirmation-topic} pairs), never from code —
+ * the whole point of extracting this saga out of microservice-security. Port comes from
+ * {@code OFFBOARDING_PORT} (default 8094 — next free after collections-ui's 8093); HTTP serves
+ * only {@code /health}, {@code /alive} and {@code /metrics}, the saga itself lives on Kafka.
+ *
+ * <p>Saga state is Postgres when {@code DB_URL} is set, else in-memory H2. Without
+ * {@code KAFKA_BOOTSTRAP_SERVERS} the loop simply never runs (dev, tests) — and then the probes
+ * have no loops to distrust. With Kafka the two probes split readiness from liveness:
+ * {@code /health} (READINESS) turns 503 once either loop stops COMPLETING passes for longer than
+ * its stall tolerance ({@link #DEFAULT_CONSUMER_STALL} / {@link #DEFAULT_SWEEPER_STALL}) — a
+ * broker outage does that, and restarting would not
+ * fix the broker, so compose healthchecks and {@code depends_on} gate on it while dependants
+ * wait. {@code /alive} (LIVENESS) turns 503 only when a loop thread died or stopped being
+ * scheduled for longer than {@code OFFBOARDING_ALIVE_STALL_SEC} (default 240s; floored at
+ * {@link #ALIVE_STALL_FLOOR}, the SUM of every block one iteration can spend — the rewind lookup,
+ * the readiness probe, the poll, the DATABASE, the flush, the commit and the retry backoff —
+ * plus a margin) — THAT is what an orchestrator's liveness
+ * probe restarts; the k3s deployment
+ * (HOSTING-K3S.md) is where a genuinely dead loop gets bounced without a human.
+ */
+public final class Main {
+
+    private static final Logger LOG = LoggerFactory.getLogger(Main.class);
+
+    static final String DEFAULT_PARTICIPANTS =
+            "memes=memes-events,comments=comments-events,collections=usercollections-events";
+
+    /** The variable {@link #parseParticipants} refusals name, so the operator gets told WHERE to
+     *  fix it — the same courtesy {@link #longEnv} pays for the numeric ones. */
+    static final String PARTICIPANTS_ENV = "OFFBOARDING_PARTICIPANTS";
+
+    /** How often the sweeper wakes ({@link KafkaLoop} sweep interval) — also the floor for the
+     *  sweeper's stall tolerance: liveness is stamped at most once per interval, so a smaller
+     *  tolerance would flag a perfectly healthy sweeper as stalled. */
+    static final Duration SWEEP_EVERY = Duration.ofSeconds(15);
+
+    /** The safety margin the derived floor carries on top of the arithmetic: {@code alive()}
+     *  compares the age of the beat with {@code <=}, and an iteration that legitimately spends
+     *  every clock it is allowed still pays for a GC pause, a socket settling or the scheduler's
+     *  own latency on top — an exactly-tight floor would call that a dead thread. */
+    static final int FLOOR_MARGIN_PERCENT = 25;
+
+    /**
+     * The worst LEGAL consumer iteration, block by block — the sum of every clock one pass can
+     * spend, in the order {@link KafkaLoop#consume} spends them. Written out as a sum on purpose:
+     * the floor used to be {@code 2 x max(...)} of the same clocks, a shape that LOOKS
+     * conservative and is not. Two of the longest block (30s) plus a sweep and a probe came to
+     * 80s, while an honest worst iteration adds up to 146s — so the "safe minimum" sat well below
+     * the case it was sold as covering, and a broker outage on a slow database could still read
+     * as a dead thread. Every term below is one real block:
+     *
+     * <ul>
+     *   <li>{@link KafkaLoop#API_TIMEOUT} — the rewind's {@code committed()} lookup, when the
+     *       previous pass failed</li>
+     *   <li>{@link KafkaLoop#PROBE_TIMEOUT} — the /health honesty probe</li>
+     *   <li>{@link KafkaLoop#POLL_TIMEOUT} — the poll itself</li>
+     *   <li>{@link Database#WORST_BLOCK} — the router's saga reads and writes; ONE such block,
+     *       because the first database failure throws out of the pass and the store calls behind
+     *       it never run</li>
+     *   <li>{@link KafkaLoop#DELIVERY_TIMEOUT} — {@code flush()} (= {@link KafkaLoop#MAX_BLOCK}
+     *       for a send still waiting on metadata); {@code settleDeliveries} adds nothing, the
+     *       futures are settled by the time it looks at them</li>
+     *   <li>{@link KafkaLoop#API_TIMEOUT} again — {@code commitSync()}</li>
+     *   <li>{@link KafkaLoop#MAX_BACKOFF} — the pause before the retry, paid INSIDE the iteration
+     *       that failed</li>
+     * </ul>
+     */
+    static final Duration CONSUMER_WORST_ITERATION = KafkaLoop.API_TIMEOUT
+            .plus(KafkaLoop.PROBE_TIMEOUT)
+            .plus(KafkaLoop.POLL_TIMEOUT)
+            .plus(Database.WORST_BLOCK)
+            .plus(KafkaLoop.DELIVERY_TIMEOUT)
+            .plus(KafkaLoop.API_TIMEOUT)
+            .plus(KafkaLoop.MAX_BACKOFF);
+
+    /**
+     * The same accounting for the OTHER loop: the sweeper sleeps its whole interval, reads and
+     * writes the store, flushes what it announced, and backs off if that failed. It has no poll,
+     * no probe and no commit — which is why the consumer, not the sweeper, sets the floor. Both
+     * threads share ONE tolerance ({@code alive()} demands a fresh beat from each), so the floor
+     * has to cover whichever is worse.
+     */
+    static final Duration SWEEPER_WORST_ITERATION = SWEEP_EVERY
+            .plus(Database.WORST_BLOCK)
+            .plus(KafkaLoop.DELIVERY_TIMEOUT)
+            .plus(KafkaLoop.MAX_BACKOFF);
+
+    /** The /alive stall tolerance's floor, DERIVED from the loops' own clocks (never a magic
+     *  number): the longer of the two worst iterations above, plus
+     *  {@link #FLOOR_MARGIN_PERCENT}. Below it a mere broker or database outage — every clock of
+     *  which is legal and bounded — would read as a dead thread, restarting a pod a restart
+     *  cannot fix. Currently 183s (consumer 146s + 25%); the 240s default sits above it. */
+    static final Duration ALIVE_STALL_FLOOR =
+            withMargin(max(CONSUMER_WORST_ITERATION, SWEEPER_WORST_ITERATION));
+
+    /** The code default for {@code OFFBOARDING_ALIVE_STALL_SEC}. A named constant, not a literal
+     *  in {@code main()}, so the test can assert the one property a default must have: that it
+     *  sits ABOVE {@link #ALIVE_STALL_FLOOR}. The previous 120s did not, once the floor was
+     *  computed honestly — and a default that the floor silently corrects is a lie in the
+     *  javadoc, the manifests and the operator's head at once. */
+    static final Duration DEFAULT_ALIVE_STALL = Duration.ofSeconds(240);
+
+    /** How long the consumer loop may go without completing a cycle before /health says so. */
+    static final Duration DEFAULT_CONSUMER_STALL = Duration.ofSeconds(60);
+
+    /** The same for the sweeper; floored at {@link #SWEEP_EVERY}, which is as often as it stamps. */
+    static final Duration DEFAULT_SWEEPER_STALL = Duration.ofSeconds(60);
+
+    private static Duration max(Duration a, Duration b) {
+        return a.compareTo(b) >= 0 ? a : b;
+    }
+
+    /** The derived worst case plus {@link #FLOOR_MARGIN_PERCENT}, rounded UP to whole seconds —
+     *  the tolerance is configured and logged in seconds, so the floor lives in them too. */
+    private static Duration withMargin(Duration derived) {
+        long millis = derived.toMillis() * (100 + FLOOR_MARGIN_PERCENT) / 100;
+        return Duration.ofSeconds(Math.ceilDiv(millis, 1_000));
+    }
+
+    private Main() {
+    }
+
+    public static void main(String[] args) {
+        ProfileGuard.requireDeclaredProfile("OFFBOARDING_PROFILE", System.getenv("OFFBOARDING_PROFILE"));
+        // every numeric env is range-checked at boot: a port outside 1-65535, a negative retry
+        // budget or a non-positive timeout cannot mean anything the operator intended, and
+        // refusing with the variable's name and value beats booting into quiet nonsense. The
+        // (int) casts sit on checked ranges, so they can no longer truncate silently
+        int port = (int) longEnv("OFFBOARDING_PORT", 8094, 1, 65535);
+        String factsTopic = System.getenv().getOrDefault("OFFBOARDING_FACTS_TOPIC", "security-events");
+        Map<String, String> participantByTopic = parseParticipants(
+                System.getenv().getOrDefault(PARTICIPANTS_ENV, DEFAULT_PARTICIPANTS));
+        // The saga's clocks are CONSTANTS, not environment. Six of these used to be env vars
+        // with ranges and a boot-time refusal, and in the whole estate — compose, k8s, e2e, the
+        // smoke script — not one deployment ever set a single one of them. That is the expensive
+        // half of a configuration level: the machinery is real, the door is one nobody opens.
+        //
+        // The timeout and the retry count are the ones that must NOT be a dial anyway: they are
+        // half of a contract with security (see SweepOverdue#worstCaseDecision), and a number you
+        // cannot change without re-deriving somebody else's is not configuration. What stays in
+        // the environment is topology — the port, the topics, who participates — plus the one
+        // number below that a manifest actually pins, because those genuinely differ between one
+        // deployment and the next.
+        Duration purgeTimeout = SweepOverdue.DEFAULT_PURGE_TIMEOUT;
+        int maxPurgeRetries = SweepOverdue.DEFAULT_MAX_RETRIES;
+        Duration republishAfter = SweepOverdue.DEFAULT_REPUBLISH_AFTER;
+        Duration retention = SweepOverdue.DEFAULT_RETENTION;
+        Duration consumerStall = DEFAULT_CONSUMER_STALL;
+        Duration sweeperStall = flooredStall("the sweeper stall tolerance", DEFAULT_SWEEPER_STALL,
+                SWEEP_EVERY);
+        // 240s default: it has to sit ABOVE ALIVE_STALL_FLOOR, and the floor is now the honest
+        // SUM of one iteration's blocks (rewind lookup 20s + probe 5s + poll 1s + database 40s +
+        // flush 30s + commit 20s + backoff 30s = 146s, plus 25% margin = 183s) rather than the
+        // 2 x max(...) shape that used to under-count it at 100s. The old 120s default was BELOW
+        // that honest floor, so every boot would have been silently floored — a default that
+        // needs correcting is not a default
+        // the ONE numeric dial that survives, because a deployment genuinely turns it: the k8s
+        // manifest pins it beside the liveness probe's thresholds, which are derived from it, and
+        // an operator who edits one must be able to edit the other. A knob that looks live and is
+        // dead would be worse than no knob at all
+        Duration aliveStall = flooredAliveStall("OFFBOARDING_ALIVE_STALL_SEC",
+                Duration.ofSeconds(longEnv("OFFBOARDING_ALIVE_STALL_SEC",
+                        DEFAULT_ALIVE_STALL.toSeconds(), 1, Long.MAX_VALUE)));
+
+        DataSource dataSource = Database.migratedDataSource();
+        SagaStore store = new JdbcSagaStore(dataSource);
+        var participants = Map.copyOf(participantByTopic).values().stream()
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        // the composition root's one watcher: everything that states a fact is handed THIS, and
+        // /metrics reads it back out. Swap it for Observations.SILENT and the service runs
+        // unobserved rather than broken — which is the whole point of the port
+        ExportedObservations observations = new ExportedObservations();
+        EventsRouter router = new EventsRouter(factsTopic, participantByTopic,
+                new BeginOffboarding(store, participants),
+                new RecordConfirmation(store, participants),
+                new SweepOverdue(store, purgeTimeout, maxPurgeRetries, republishAfter, retention),
+                new ObjectMapper(), Clock.systemUTC(), observations);
+
+        String bootstrap = System.getenv().getOrDefault("KAFKA_BOOTSTRAP_SERVERS", "").trim();
+        KafkaLoop kafkaLoop = null;
+        if (!bootstrap.isEmpty()) {
+            List<String> topics = new ArrayList<>(participantByTopic.keySet());
+            topics.add(factsTopic);
+            kafkaLoop = new KafkaLoop(router, store, topics, SWEEP_EVERY, observations);
+            kafkaLoop.start(bootstrap);
+        }
+        KafkaLoop loop = kafkaLoop;
+
+        WebServer server = WebServer.builder()
+                .port(port)
+                .routing(routing -> routing
+                        .get("/health", (req, res) -> {
+                            // READINESS: passes must COMPLETE. A broker or database outage turns
+                            // this 503 so compose healthchecks and depends_on gate on it — but an
+                            // orchestrator must NOT use it as a liveness probe: restarting the
+                            // process would not fix the broker (that is /alive's job).
+                            // The tolerance is not a detection deadline: the broker probe runs
+                            // on a cadence (KafkaLoop.PROBE_EVERY, 10s), so a broker dying just
+                            // after a successful probe is noticed up to a cadence plus a probe
+                            // timeout later than the configured stall — see healthy()'s javadoc
+                            if (loop == null || loop.healthy(consumerStall, sweeperStall)) {
+                                res.send("OK");
+                            } else {
+                                res.status(503).send("loop stalled");
+                            }
+                        })
+                        .get("/alive", (req, res) -> {
+                            // LIVENESS: the loop threads must live and keep being scheduled —
+                            // iterations count, not successes, so an outage mid-backoff stays
+                            // 200 here (and 503 on /health above). Only a genuinely dead or
+                            // wedged thread turns this 503, for the orchestrator's liveness
+                            // probe (k3s, HOSTING-K3S.md) to bounce the process
+                            if (loop == null || loop.alive(aliveStall)) {
+                                res.send("OK");
+                            } else {
+                                res.status(503).send("loop thread dead");
+                            }
+                        })
+                        .get("/metrics", new MetricsEndpoint(observations)::handle))
+                .build()
+                .start();
+
+        // the COUNT next to the set, not just the set: it is the number of confirmations every
+        // saga will wait for, and an operator comparing it against the services actually deployed
+        // is the second line of defence behind parseParticipants' duplicate refusal (a spec that
+        // maps three topics onto two names cannot boot any more, but "0 participants" — an empty
+        // spec, which is legal — still deserves to be readable at a glance in the boot log)
+        System.out.println("offboarding listening on port " + server.port()
+                + " (" + participants.size() + " participants: " + participants + ")");
+    }
+
+    /**
+     * A numeric env var, or the default when absent/blank — range-checked, because every one of
+     * these has values that cannot mean anything (a negative timeout, port 0). A mangled or
+     * out-of-range value refuses to boot with a message that NAMES the variable and echoes the
+     * value — a bare NumberFormatException("For input string: \"abc\"") names neither the
+     * variable nor the fix, and this service boots from a dozen of these.
+     */
+    static long longEnv(String name, long defaultValue, long min, long max) {
+        return inRangeOrRefuse(name, parseLongOrRefuse(name, System.getenv(name), defaultValue),
+                min, max);
+    }
+
+    static long parseLongOrRefuse(String name, String raw, long defaultValue) {
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException mangled) {
+            throw new IllegalArgumentException(
+                    name + " must be a whole number, got \"" + raw + "\"");
+        }
+    }
+
+    static long inRangeOrRefuse(String name, long value, long min, long max) {
+        if (value >= min && value <= max) {
+            return value;
+        }
+        throw new IllegalArgumentException(max == Long.MAX_VALUE
+                ? name + " must be at least " + min + ", got " + value
+                : name + " must be between " + min + " and " + max + ", got " + value);
+    }
+
+    /**
+     * The loops stamp their markers once per {@code sweepEvery} at best (the sweeper sleeps the
+     * whole interval between stamps), so a stall tolerance below the interval would report a
+     * perfectly healthy loop as stalled on every check. Floor it — loudly, through the logger,
+     * where the service's own WARNs live (System.err bypasses the log shipping).
+     *
+     * <p>{@code name} is what the message calls the value: still an environment variable for the
+     * /alive tolerance, prose for the stall constants. Telling an operator to fix a variable this
+     * service no longer reads would be worse than saying nothing.
+     */
+    static Duration flooredStall(String name, Duration configured, Duration sweepEvery) {
+        if (configured.compareTo(sweepEvery) >= 0) {
+            return configured;
+        }
+        LOG.warn("{} of {}s is below the sweep interval of {}s — the sweeper can only stamp its"
+                        + " marker once per interval, so the probe would call a healthy loop"
+                        + " stalled; using {}s instead", name, configured.toSeconds(),
+                sweepEvery.toSeconds(), sweepEvery.toSeconds());
+        return sweepEvery;
+    }
+
+    /**
+     * The /alive tolerance's own floor, {@link #ALIVE_STALL_FLOOR}: one iteration can legally
+     * spend EVERY block in {@link #CONSUMER_WORST_ITERATION} back to back — they are alternatives
+     * only in the happy case, and a broker outage arriving on top of a slow database pays them in
+     * sequence — so a tolerance below their sum (plus a margin) would let an outage read as a
+     * dead thread, the exact restart-loop /alive exists to prevent. The message spells the sum
+     * out term by term: an operator who is told "below the floor" deserves to see WHICH clocks
+     * add up to it.
+     */
+    static Duration flooredAliveStall(String name, Duration configured) {
+        if (configured.compareTo(ALIVE_STALL_FLOOR) >= 0) {
+            return configured;
+        }
+        LOG.warn("{} of {}s is below the {}s floor, the SUM of one iteration's blocks (rewind"
+                        + " lookup {}s + broker probe {}s + poll {}s + database {}s + flush {}s"
+                        + " + commit {}s + max backoff {}s = {}s for the consumer, {}s for the"
+                        + " sweeper, plus {}% margin) — an outage legitimately holds an iteration"
+                        + " that long, and a smaller tolerance would let /alive restart a pod"
+                        + " over a broker or database problem; using {}s instead",
+                name, configured.toSeconds(), ALIVE_STALL_FLOOR.toSeconds(),
+                KafkaLoop.API_TIMEOUT.toSeconds(), KafkaLoop.PROBE_TIMEOUT.toSeconds(),
+                KafkaLoop.POLL_TIMEOUT.toSeconds(), Database.WORST_BLOCK.toSeconds(),
+                KafkaLoop.DELIVERY_TIMEOUT.toSeconds(), KafkaLoop.API_TIMEOUT.toSeconds(),
+                KafkaLoop.MAX_BACKOFF.toSeconds(), CONSUMER_WORST_ITERATION.toSeconds(),
+                SWEEPER_WORST_ITERATION.toSeconds(), FLOOR_MARGIN_PERCENT,
+                ALIVE_STALL_FLOOR.toSeconds());
+        return ALIVE_STALL_FLOOR;
+    }
+
+    /**
+     * {@code memes=memes-events,comments=comments-events} → {topic → participant}.
+     *
+     * <p>BOTH halves have to be unique, and a repeat refuses to boot instead of quietly shrinking
+     * the saga. A repeated TOPIC used to overwrite the earlier entry, so one participant fell off
+     * the subscription list without a word. A repeated NAME is worse, because the damage is
+     * invisible even in this map: {@code main()} derives the set of confirmations to wait for from
+     * {@code values()}, so two entries under one name collapse into one and the saga waits for
+     * FEWER confirmations than there are participants holding the leaver's content. It then
+     * announces {@code PORTAL_CONTENT_PURGED} on an incomplete quorum, security deletes the
+     * account for good — and the participant nobody waited for has no timeout and no compensation
+     * left, so if its purge did fail, nothing will ever say so. Data gone and the verdict false is
+     * the one outcome this service exists to prevent; a typo in one env var must not be able to
+     * buy it. Hence the refusal NAMES the variable, both offending values and the consequence,
+     * like every other boot-time check here.
+     */
+    static Map<String, String> parseParticipants(String spec) {
+        Map<String, String> byTopic = new LinkedHashMap<>();
+        Map<String, String> topicByName = new LinkedHashMap<>();
+        for (String pair : spec.split(",")) {
+            String trimmed = pair.trim();
+            if (trimmed.isEmpty()) {
+                continue;   // an empty spec means: no content participants at all
+            }
+            String[] parts = trimmed.split("=", 2);
+            if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
+                throw new IllegalArgumentException("participant entry must be name=topic: " + trimmed);
+            }
+            String name = parts[0].trim();
+            String topic = parts[1].trim();
+            String topicHeldBy = byTopic.putIfAbsent(topic, name);
+            if (topicHeldBy != null) {
+                throw new IllegalArgumentException(PARTICIPANTS_ENV + " lists the topic \"" + topic
+                        + "\" twice (for \"" + topicHeldBy + "\" and \"" + name + "\"); one of the"
+                        + " two would drop off the subscription list unnoticed — every participant"
+                        + " needs its own confirmation topic");
+            }
+            String nameHolds = topicByName.putIfAbsent(name, topic);
+            if (nameHolds != null) {
+                throw new IllegalArgumentException(PARTICIPANTS_ENV + " lists the participant \""
+                        + name + "\" twice (on \"" + nameHolds + "\" and \"" + topic + "\"); the"
+                        + " saga would wait for fewer confirmations than there are participants and"
+                        + " announce the purge complete too early — every participant needs one"
+                        + " name and one topic");
+            }
+        }
+        return byTopic;
+    }
+}

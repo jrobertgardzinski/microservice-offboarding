@@ -19,15 +19,45 @@
     <groupId>com.jrobertgardzinski</groupId>
     <artifactId>microservice-offboarding</artifactId>
     <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <!--
+      Boundary-Control-Entity, as three Maven modules rather than three packages.
+
+      Packages would have been cheaper and would have proved nothing: the whole reason for the
+      split is that the saga's spec used to reach into the transport for the class that decides
+      what gets published, and a package boundary cannot stop that — a module can. offboarding-
+      control has no dependency on offboarding-boundary, so the router simply cannot see Kafka,
+      the database or the HTTP endpoints, and the scenarios that drive it cannot either.
+
+      BCE and not the five layers the identity service uses, because this one has no model worth
+      a domain: it is a process manager, its state is rows, and its policy belongs to the services
+      it commands. Five layers here would mean a package with one file in it.
+
+        entity   — the saga's data: what a case is opened with, what a confirmation lands as,
+                   what the sweeper hands back, and the facts this service states about itself
+        control  — the decisions: the three use cases and the switchboard that routes between
+                   them. Framework-free, and now unable to name a topic by construction
+        boundary — everything with the outside in it: Kafka, JDBC, Flyway, the probes, Main
+    -->
+    <modules>
+        <module>offboarding-entity</module>
+        <module>offboarding-control</module>
+        <module>offboarding-boundary</module>
+    </modules>
 
     <properties>
-        <mainClass>com.jrobertgardzinski.offboarding.infrastructure.Main</mainClass>
+        <mainClass>com.jrobertgardzinski.offboarding.boundary.Main</mainClass>
         <cucumber.version>7.20.1</cucumber.version>
         <junit-suite.version>6.1.2</junit-suite.version>
         <allure.version>2.35.4</allure.version>
         <!-- the same Testcontainers the workspace already runs (microservice-memes gets 1.21.2
              from the Spring Boot 3.5.3 BOM; this Helidon build pins it explicitly) -->
         <testcontainers.version>1.21.4</testcontainers.version>
+        <!-- specs/ and pacts/ stay at the repo root: the Gherkin files describe the SERVICE, and
+             the sibling repos' provider tests read the pacts from a path that must not depend on
+             which module happens to run the contract tests -->
+        <offboarding.repo.root>${project.basedir}</offboarding.repo.root>
     </properties>
 
     <dependencyManagement>
@@ -177,17 +207,7 @@
     </dependencies>
 
     <build>
-        <finalName>${project.artifactId}</finalName>
         <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-dependency-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <id>copy-libs</id>
-                    </execution>
-                </executions>
-            </plugin>
             <!-- the top-level specs/ dir (one Gherkin file per use case — the entry point into
                  this service) goes onto the test classpath instead of copying the files around;
                  microservice-security's convention -->
@@ -205,7 +225,7 @@
                         <configuration>
                             <resources>
                                 <resource>
-                                    <directory>${project.basedir}/specs</directory>
+                                    <directory>${offboarding.repo.root}/specs</directory>
                                     <includes>
                                         <include>**/*.feature</include>
                                     </includes>
@@ -224,7 +244,7 @@
                         <allure.results.directory>${project.build.directory}/allure-results</allure.results.directory>
                         <!-- the contract tests write the pacts here (committed, not target/) so
                              the producers' provider tests verify them from a sibling checkout -->
-                        <pact.rootDir>${project.basedir}/pacts</pact.rootDir>
+                        <pact.rootDir>${offboarding.repo.root}/pacts</pact.rootDir>
                         <pact_do_not_track>true</pact_do_not_track>
                     </systemPropertyVariables>
                 </configuration>

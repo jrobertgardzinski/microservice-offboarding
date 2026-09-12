@@ -32,14 +32,27 @@ deletes immediately).
 ## Architecture
 
 The seventh portal service, same flavour as `microservice-user-collections` (Helidon 4 SE on
-virtual threads) because the interesting part here is the **pattern**, not a new framework:
+virtual threads) because the interesting part here is the **pattern**, not a new framework.
 
-- **application** — `BeginOffboarding`, `RecordConfirmation`, `SweepOverdue` over the `SagaStore`
-  port. Framework-free.
-- **infrastructure** — `EventsRouter` (the pure switchboard the scenarios and pacts drive),
-  `KafkaLoop` (the real transport: consume, route, publish with the correlation-id header,
-  commit), `JdbcSagaStore` (Postgres / H2-PG-mode, Flyway; confirmations are ROWS, never
-  per-participant columns), `/health` + `/metrics` over HTTP.
+**Boundary-Control-Entity, as three Maven modules.** Not the five layers the identity service
+uses: this one has no model worth a domain — it is a process manager, its state is rows, and its
+policy belongs to the services it commands, so five layers would mean packages with one file in
+them. And modules rather than packages because the split had to *hold*: the saga's Gherkin
+scenarios used to import the switchboard from the transport package, so the spec of the process
+could not be read without reading Kafka. A package cannot prevent that; a missing dependency can.
+
+- **offboarding-entity** — the saga's data (`Opening`, `Recorded`, `Retry`, `Compensated`,
+  `SweepResult`, `PendingOutcome`) and the facts this service states about itself (`Observation`).
+  No dependencies at all, which is the guarantee: nothing in here can know about a broker.
+- **offboarding-control** — the decisions: `BeginOffboarding`, `RecordConfirmation`,
+  `SweepOverdue` over the `SagaStore` port, and `EventsRouter` (the pure switchboard the scenarios
+  and pacts drive). Framework-free, and unable to see the transport by construction.
+- **offboarding-boundary** — the deployable, and everything with the outside in it:
+  `KafkaLoop` (consume, route, publish with the correlation-id header, commit), `JdbcSagaStore`
+  (Postgres / H2-PG-mode, Flyway; confirmations are ROWS, never per-participant columns),
+  `/health` + `/metrics` over HTTP, and `Main` — the composition root that decides which adapter
+  each port gets. It keeps the artifact name `microservice-offboarding.jar`, so the Dockerfile,
+  the compose build and the CI boot smoke only had to learn one new path.
 
 Idempotence is the law (workspace ADR 0006, enforced by the generic `IdempotentCommandsTest`):
 a replayed deletion fact finds its saga by the fact's `id` even after completion; a duplicate
