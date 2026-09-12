@@ -50,6 +50,16 @@ jobs:
         with:
           repository: jrobertgardzinski/observation
           path: observation
+      # envelope reads the events off the topics; constraint is its own dependency (Outcome), so
+      # it is checked out and installed too — a library's libraries are the consumer's problem here
+      - uses: actions/checkout@v7
+        with:
+          repository: jrobertgardzinski/libs
+          path: libs
+      - uses: actions/checkout@v7
+        with:
+          repository: jrobertgardzinski/envelope
+          path: envelope
       - name: Set up JDK 25
         uses: actions/setup-java@v5
         with:
@@ -57,7 +67,10 @@ jobs:
           java-version: '25'
           cache: maven
       - name: Install the shared libraries
-        run: mvn -B -q --no-transfer-progress -f observation/pom.xml install -DskipTests
+        run: |
+          mvn -B -q --no-transfer-progress -f observation/pom.xml install -DskipTests
+          mvn -B -q --no-transfer-progress -f libs/pom.xml install -DskipTests
+          mvn -B -q --no-transfer-progress -f envelope/pom.xml install -DskipTests
       - name: Build and test (including pact provider verification)
         run: mvn -B --no-transfer-progress -f portal/microservice-offboarding/pom.xml clean verify
 

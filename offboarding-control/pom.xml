@@ -36,6 +36,13 @@
             <artifactId>observation</artifactId>
             <version>1.0.0-SNAPSHOT</version>
         </dependency>
+        <dependency>
+            <!-- reading an event without letting a bad one wedge the topic, and saying what was
+                 wrong with it without putting anybody's address in the log -->
+            <groupId>com.jrobertgardzinski</groupId>
+            <artifactId>envelope</artifactId>
+            <version>1.0.0-SNAPSHOT</version>
+        </dependency>
     </dependencies>
 
     <build>

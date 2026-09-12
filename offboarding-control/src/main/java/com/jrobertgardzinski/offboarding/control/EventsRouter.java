@@ -1,5 +1,9 @@
 package com.jrobertgardzinski.offboarding.control;
 
+import java.util.stream.Stream;
+import com.jrobertgardzinski.util.constraint.Outcome;
+import com.jrobertgardzinski.envelope.Masked;
+import com.jrobertgardzinski.envelope.Envelope;
 import com.jrobertgardzinski.offboarding.entity.Compensated;
 import com.jrobertgardzinski.offboarding.entity.PendingOutcome;
 import com.jrobertgardzinski.offboarding.entity.Recorded;
@@ -169,20 +173,24 @@ public class EventsRouter {
     /** Route one consumed record to its use case; returns what to publish in response. */
     public List<Outgoing> handle(String topic, String payload) {
         JsonNode event;
-        try {
-            event = mapper.readTree(payload);
-        } catch (Exception malformed) {
-            // the payload may carry an email in some other spelling — scrub before logging
-            LOG.warn("dropping malformed event on {}: {}", topic, scrubbed(payload));
+        Outcome<Envelope> read = Envelope.read(payload, mapper);
+        if (read.findValue().isEmpty()) {
+            // its SIZE, never its text: an unparsed payload is of unknown shape, so the scrubber
+            // has the least idea what it is looking at, and a newline in it would become a new log
+            // LINE — a forged ERROR planted in an operator's view
+            LOG.warn("dropping an unreadable event on {} ({}): {}", topic,
+                    Masked.sizeOf(payload), read.errorCodes());
             return List.of();
         }
-        String type = event.path("type").asText();
+        Envelope envelope = read.findValue().orElseThrow();
+        event = envelope.node();
+        String type = envelope.type();
         if (topic.equals(factsTopic) && "ACCOUNT_DELETION_REQUESTED".equals(type)) {
-            return onDeletionRequested(event);
+            return onDeletionRequested(envelope);
         }
         String participant = participantByTopic.get(topic);
         if (participant != null && "USER_CONTENT_PURGED".equals(type)) {
-            return onConfirmation(event, participant);
+            return onConfirmation(envelope, participant);
         }
         return List.of();   // other lifecycle events share these topics; not ours
     }
@@ -198,7 +206,7 @@ public class EventsRouter {
         List<Outgoing> out = new ArrayList<>();
         for (Retry retry : swept.retries()) {
             LOG.info("purge unconfirmed in time for {}; re-commanding (saga {})",
-                    masked(retry.email()), retry.sagaId());
+                    Masked.address(retry.email()), retry.sagaId());
             // the retry repeats the ORIGINAL command: the leaver's policy choices were stored
             // with the saga at start (V3) precisely so a re-commanded purge does not silently
             // fall back to the participants' defaults. countsRetryFor makes the loop charge
@@ -210,7 +218,7 @@ public class EventsRouter {
         for (Compensated failed : swept.compensated()) {
             LOG.warn("portal purge overdue for {} despite the retries; compensating and announcing "
                             + "the failure (saga {}, already marked: {})",
-                    masked(failed.email()), failed.sagaId(), failed.confirmed());
+                    Masked.address(failed.email()), failed.sagaId(), failed.confirmed());
             // the compensation goes out FIRST, and it is what makes this word honest: before the
             // participants learnt to mark instead of destroy, "compensated" meant nothing but an
             // apology — the content was already gone. It is sent to every participant, not only to
@@ -227,7 +235,7 @@ public class EventsRouter {
         }
         for (PendingOutcome pending : swept.unannounced()) {
             LOG.info("re-announcing the {} outcome for {} (saga {}): the first announcement "
-                    + "never reached the broker", pending.state(), masked(pending.email()), pending.sagaId());
+                    + "never reached the broker", pending.state(), Masked.address(pending.email()), pending.sagaId());
             // the participants' command rides along with every re-announcement, because the two
             // went out together and are withheld together: a saga is marked announced only when
             // ALL of its events reached the broker (KafkaLoop#settleDeliveries), so an outcome
@@ -247,61 +255,45 @@ public class EventsRouter {
         return out;
     }
 
-    private List<Outgoing> onDeletionRequested(JsonNode fact) {
-        String email = fact.path("email").asText();
-        if (email.isBlank()) {
-            LOG.warn("dropping deletion fact without an email: {}", summarised(fact));
+    /**
+     * Everything this method used to do before it could think: parse, refuse a poison pill, cap a
+     * ferried blob, keep an address out of the log. All of that is the envelope's job now, and what
+     * is left below the reads is the saga's own decision.
+     *
+     * <p>The reasons survived the move; only their code did not. A missing or mangled {@code id} is
+     * a poison pill because that id is the REPLAY KEY — inventing one would silently disable the
+     * protection that makes a redelivered fact find its own saga. An absent {@code sagaId} is an
+     * older producer and degrades; a mangled one drops, because a correlation nobody can match
+     * would let a verdict settle the wrong deletion. An oversized {@code policy} is neither: the
+     * deletion goes ahead without it.
+     */
+    private List<Outgoing> onDeletionRequested(Envelope fact) {
+        Outcome<String> readEmail = fact.requiredText("email");
+        Outcome<UUID> readFactId = fact.requiredUuid("id");
+        Outcome<Optional<UUID>> readSecuritySagaId = fact.optionalUuid("sagaId");
+        Outcome<Optional<JsonNode>> readPolicy = fact.objectWithin("policy", MAX_POLICY_BYTES);
+        List<String> refusals = Stream.of(readEmail, readFactId, readSecuritySagaId)
+                .flatMap(outcome -> outcome.errorCodes().stream()).toList();
+        if (!refusals.isEmpty()) {
+            LOG.warn("dropping a deletion fact this service cannot place ({}): {}",
+                    refusals, fact.summary());
             return List.of();
         }
-        // the fact's id is the replay key: the same fact twice finds the same saga. A missing or
-        // mangled id is a poison pill — inventing a random one would silently disable the replay
-        // protection (and security's pact pins the uuid), so it drops like malformed JSON
-        UUID factId;
-        try {
-            factId = UUID.fromString(fact.path("id").asText());
-        } catch (IllegalArgumentException poison) {
-            LOG.warn("dropping deletion fact with a missing or invalid id: {}", summarised(fact));
-            return List.of();
+        if (!readPolicy.errorCodes().isEmpty() || readPolicy instanceof Outcome.AllowedWithWarning) {
+            LOG.warn("the policy on this deletion fact is over the {}-byte cap; starting the saga"
+                            + " without it — the purge will use the participants' defaults ({})",
+                    MAX_POLICY_BYTES, fact.summary());
         }
-        // security's own handle on the deletion, stored with the saga and ECHOED by the verdict:
-        // without it security can only match the verdict by email address, and a late verdict of
-        // a closed case then compensates a NEWER deletion for the same address. Absent means an
-        // older producer — the saga opens without a handle, as every saga did before this field.
-        // Present-but-mangled drops like the fact's own id: the deletion cannot be correlated, so
-        // purging the content would risk a verdict nobody can match (content erased, account
-        // restored), and security's own timeout still unlocks the account
-        UUID securitySagaId = null;
-        if (fact.has("sagaId")) {
-            String raw = fact.get("sagaId").asText();
-            try {
-                securitySagaId = UUID.fromString(raw);
-            } catch (IllegalArgumentException mangled) {
-                LOG.warn("dropping deletion fact with an unparseable sagaId \"{}\": {}",
-                        raw, summarised(fact));
-                return List.of();
-            }
-        }
+        String email = readEmail.findValue().orElseThrow();
+        UUID factId = readFactId.findValue().orElseThrow();
+        UUID securitySagaId = readSecuritySagaId.findValue().orElseThrow().orElse(null);
         // who asked, normalised: anything that is not exactly ADMIN is the account's own owner,
         // which is also the honest reading of a fact from before the field existed — until then
         // security had one deletion route and only the owner could walk it
-        String initiatedBy = BY_ADMIN.equals(fact.path("initiatedBy").asText()) ? BY_ADMIN : BY_SELF;
-        // the policy is stored with the saga (verbatim, only when it is the object the command
-        // would carry) so the sweeper's re-command can repeat the original command — capped at
-        // MAX_POLICY_BYTES: an oversized blob is dropped from the saga AND the command alike
-        // (keeping the two identical, so the re-command still repeats the original), and the
-        // purge proceeds on the participants' defaults, like with an unreadable stored policy
-        JsonNode policy = fact.path("policy").isObject() ? fact.path("policy") : null;
+        String initiatedBy = BY_ADMIN.equals(fact.node().path("initiatedBy").asText())
+                ? BY_ADMIN : BY_SELF;
+        JsonNode policy = readPolicy.findValue().orElseThrow().orElse(null);
         String storedPolicy = policy == null ? null : write(policy);
-        if (storedPolicy != null
-                && storedPolicy.getBytes(StandardCharsets.UTF_8).length > MAX_POLICY_BYTES) {
-            LOG.warn("policy on the deletion fact serialises to {} bytes, over the {}-byte cap;"
-                            + " starting the saga without it — the purge will use the"
-                            + " participants' defaults ({})",
-                    storedPolicy.getBytes(StandardCharsets.UTF_8).length, MAX_POLICY_BYTES,
-                    summarised(fact));
-            policy = null;
-            storedPolicy = null;
-        }
         BeginOffboarding.Begun begun = begin.execute(factId, email, storedPolicy, securitySagaId,
                 initiatedBy, Instant.now(clock));
         if (begun.nothingToPurge()) {
@@ -311,44 +303,40 @@ public class EventsRouter {
                 // whatever it still owes is the outbox's business (unannouncedOutcomes), not this
                 // fact's
                 LOG.info("replayed deletion fact for {}: nothing to purge and the saga is already"
-                        + " finished; no second announcement (saga {})", masked(email), begun.sagaId());
+                        + " finished; no second announcement (saga {})", Masked.address(email), begun.sagaId());
                 return List.of();
             }
-            LOG.info("no content participants configured; portal instantly clean for {}", masked(email));
+            LOG.info("no content participants configured; portal instantly clean for {}", Masked.address(email));
             return List.of(outcome("PORTAL_CONTENT_PURGED", email, begun.sagaId(),
                     securitySagaId, null));
         }
-        LOG.info("commanding the content purge for {} (saga {}, requested by {})", masked(email),
+        LOG.info("commanding the content purge for {} (saga {}, requested by {})", Masked.address(email),
                 begun.sagaId(), initiatedBy);
         return List.of(purgeCommand(begun.sagaId(), email, policy, initiatedBy));
     }
 
-    private List<Outgoing> onConfirmation(JsonNode confirmation, String participant) {
-        String email = confirmation.path("email").asText();
-        if (email.isBlank()) {
-            LOG.warn("dropping {} confirmation without an email: {}", participant, summarised(confirmation));
+    /**
+     * The same move as the fact above: the reads are the envelope's, the decision is the saga's.
+     *
+     * <p>The rule kept intact through it — and it is subtle enough to be worth stating twice — is
+     * that an ABSENT {@code sagaId} degrades to the email lookup (an older producer) while a
+     * PRESENT but unreadable one drops. A producer that wrote the field and failed to fill it is
+     * mangled, not old, and degrading there would reopen by the back door exactly the hole the
+     * precise address closed: a mangled echo of a finished case landing on a NEWER saga for the
+     * same account.
+     */
+    private List<Outgoing> onConfirmation(Envelope confirmation, String participant) {
+        Outcome<String> readEmail = confirmation.requiredText("email");
+        Outcome<Optional<UUID>> readSagaId = confirmation.optionalUuid("sagaId");
+        List<String> refusals = Stream.of(readEmail, readSagaId)
+                .flatMap(outcome -> outcome.errorCodes().stream()).toList();
+        if (!refusals.isEmpty()) {
+            LOG.warn("dropping a {} confirmation this service cannot place ({}): {}",
+                    participant, refusals, confirmation.summary());
             return List.of();
         }
-        // fresh confirmations echo the saga id from the command — the precise address, and the
-        // store treats a stale one (saga no longer STARTED) as a stray from a closed case. ONLY
-        // an ABSENT field degrades to the email lookup (old producers). A field that is present
-        // but null or unparseable drops like any poison pill: a producer that WROTE the field
-        // and failed to fill it is mangled, not old, and degrading it to the email lookup would
-        // reopen by the back door exactly the hole the precise address closed — a mangled echo
-        // of a finished case could land on a NEWER saga for the same account
-        UUID sagaId = null;
-        if (confirmation.has("sagaId")) {
-            // the raw value is safe to log verbatim: a saga id is a correlation handle, not PII —
-            // and it is exactly what an operator needs to trace the mangled producer
-            String raw = confirmation.get("sagaId").asText();
-            try {
-                sagaId = UUID.fromString(raw);
-            } catch (IllegalArgumentException mangled) {
-                LOG.warn("dropping {} confirmation with an unparseable sagaId \"{}\": {}",
-                        participant, raw, summarised(confirmation));
-                return List.of();
-            }
-        }
+        String email = readEmail.findValue().orElseThrow();
+        UUID sagaId = readSagaId.findValue().orElseThrow().orElse(null);
         Optional<Recorded> landed =
                 confirm.execute(email, sagaId, participant, Instant.now(clock));
         // two outcomes that used to share one line, and they are not the same event: a stray
@@ -358,16 +346,16 @@ public class EventsRouter {
         // confirmation had been stored, when it had been dropped
         if (landed.isEmpty()) {
             LOG.info("dropping stray {} purge confirmation for {}: no saga is waiting for it",
-                    participant, masked(email));
+                    participant, Masked.address(email));
             return List.of();
         }
         if (!landed.get().completedSaga()) {
             LOG.info("recorded {} purge confirmation for {}; saga not complete yet",
-                    participant, masked(email));
+                    participant, Masked.address(email));
             return List.of();
         }
         LOG.info("all participants confirmed the mark for {}; closing the saga (the erasure is"
-                + " commanded now) and announcing the portal purged", masked(email));
+                + " commanded now) and announcing the portal purged", Masked.address(email));
         // ORDER MATTERS, and not for the reason it looks like. The closure is what makes the
         // erasure real, and the verdict is what lets security delete the account; publishing the
         // closure first means the irreversible step is on the wire before anybody is told the
@@ -487,32 +475,8 @@ public class EventsRouter {
         return new Outgoing(OUTCOMES_TOPIC, email, write(node), sagaId);
     }
 
-    /**
-     * PII hygiene for the poison-pill WARNs: never the whole payload — just what places the
-     * record (type + id) and a masked hint of any email it carried.
-     */
-    private static String summarised(JsonNode event) {
-        StringBuilder summary = new StringBuilder("type=").append(event.path("type").asText("?"))
-                .append(", id=").append(event.path("id").asText("?"));
-        if (event.hasNonNull("email") && !event.path("email").asText().isBlank()) {
-            summary.append(", email=").append(masked(event.path("email").asText()));
-        }
-        return summary.toString();
-    }
 
-    /** For payloads that would not even parse: mask anything shaped like an email address. */
-    private static String scrubbed(String payload) {
-        return payload.replaceAll("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+", "***");
-    }
 
-    /** PII hygiene: INFO-level logs carry only a hint of the address, enough to follow one saga. */
-    private static String masked(String email) {
-        int at = email.indexOf('@');
-        if (at <= 2) {
-            return "***" + (at < 0 ? "" : email.substring(at));
-        }
-        return email.substring(0, 2) + "***" + email.substring(at);
-    }
 
     private String write(JsonNode node) {
         try {
