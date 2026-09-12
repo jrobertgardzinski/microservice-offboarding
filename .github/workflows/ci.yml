@@ -131,7 +131,10 @@ jobs:
       - name: Prove the pact verifications actually ran
         if: always()
         run: |
-          reports=portal/microservice-offboarding/target/surefire-reports
+          # the reports are per MODULE since the service wore the estate's layers; they used to be
+          # in the repo root's target/, and the witness kept looking there — which is how it
+          # reported "it never ran" about a test that had merely moved
+          reports=portal/microservice-offboarding/offboarding-application/target/surefire-reports
           check() {
             file="$reports/TEST-$1.xml"
             if [ ! -f "$file" ]; then
@@ -148,7 +151,7 @@ jobs:
             fi
             echo "$1: $cases interaction(s) verified, $skips skipped."
           }
-          check com.jrobertgardzinski.offboarding.infrastructure.SecurityOutcomePactProviderTest
-          check com.jrobertgardzinski.offboarding.contracts.memes.MemesCommandPactProviderTest
-          check com.jrobertgardzinski.offboarding.contracts.comments.CommentsCommandPactProviderTest
-          check com.jrobertgardzinski.offboarding.contracts.collections.CollectionsCommandPactProviderTest
+          check com.jrobertgardzinski.offboarding.application.SecurityOutcomePactProviderTest
+          check com.jrobertgardzinski.offboarding.application.contracts.memes.MemesCommandPactProviderTest
+          check com.jrobertgardzinski.offboarding.application.contracts.comments.CommentsCommandPactProviderTest
+          check com.jrobertgardzinski.offboarding.application.contracts.collections.CollectionsCommandPactProviderTest
