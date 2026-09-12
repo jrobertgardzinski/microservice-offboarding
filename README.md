@@ -34,21 +34,28 @@ deletes immediately).
 The seventh portal service, same flavour as `microservice-user-collections` (Helidon 4 SE on
 virtual threads) because the interesting part here is the **pattern**, not a new framework.
 
-**Boundary-Control-Entity, as three Maven modules.** Not the five layers the identity service
-uses: this one has no model worth a domain — it is a process manager, its state is rows, and its
-policy belongs to the services it commands, so five layers would mean packages with one file in
-them. And modules rather than packages because the split had to *hold*: the saga's Gherkin
+**The estate's layers, as Maven modules.** The names are the estate's own, and that matters more
+than it looks: **a monolith is assembled by taking every service's modules up to and including
+`application`** and supplying one infrastructure underneath — a service that called its layers
+something else would not slot in. (This one skips `config`: its numbers turned out to be constants
+with a written rationale rather than dials, see `SweepOverdue`, so an empty module would be
+ceremony.) Modules rather than packages because the split had to *hold*: the saga's Gherkin
 scenarios used to import the switchboard from the transport package, so the spec of the process
 could not be read without reading Kafka. A package cannot prevent that; a missing dependency can.
 
-- **offboarding-entity** — the saga's data (`Opening`, `Recorded`, `Retry`, `Compensated`,
-  `SweepResult`, `PendingOutcome`) and the facts this service states about itself (`Observation`).
-  No dependencies at all, which is the guarantee: nothing in here can know about a broker.
-- **offboarding-control** — the decisions: `BeginOffboarding`, `RecordConfirmation`,
-  `SweepOverdue` over the `SagaStore` port, and `EventsRouter` (the pure switchboard the scenarios
-  and pacts drive). Framework-free, and unable to see the transport by construction.
-- **offboarding-boundary** — the deployable, and everything with the outside in it:
-  `KafkaLoop` (consume, route, publish with the correlation-id header, commit), `JdbcSagaStore`
+- **offboarding-domain** — the saga's data (`Opening`, `Recorded`, `Retry`, `Compensated`,
+  `SweepResult`, `PendingOutcome`), the facts this service states about itself (`Observation`) and
+  the basis a closure is carried out under (`RequestedBy`). No transport, no framework.
+- **offboarding-system** — the use cases, one per door into the process manager:
+  `BeginOffboarding`, `RecordConfirmation`, `SweepOverdue`, over the `SagaStore` port.
+- **offboarding-application** — the orchestrator: `EventsRouter`, the switchboard between those
+  use cases, talking in `Source` and `Destination` and knowing no transport at all. The scenarios
+  and every contract with a neighbour live here, because this is the layer that owns the
+  conversation.
+- **offboarding-infrastructure** — the deployable, and everything with the outside in it:
+  `KafkaLoop` (consume, route, publish with the correlation-id header, commit), `SagaTopics`
+  (the only class that knows a topic name — swapping it for an in-memory bus is what "the same
+  saga in a monolith" means in practice), `JdbcSagaStore`
   (Postgres / H2-PG-mode, Flyway; confirmations are ROWS, never per-participant columns),
   `/health` + `/metrics` over HTTP, and `Main` — the composition root that decides which adapter
   each port gets. It keeps the artifact name `microservice-offboarding.jar`, so the Dockerfile,

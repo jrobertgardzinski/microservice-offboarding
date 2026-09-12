@@ -22,32 +22,36 @@
     <packaging>pom</packaging>
 
     <!--
-      Boundary-Control-Entity, as three Maven modules rather than three packages.
+      The estate's layers, as Maven modules rather than packages.
 
-      Packages would have been cheaper and would have proved nothing: the whole reason for the
-      split is that the saga's spec used to reach into the transport for the class that decides
-      what gets published, and a package boundary cannot stop that — a module can. offboarding-
-      control has no dependency on offboarding-boundary, so the router simply cannot see Kafka,
-      the database or the HTTP endpoints, and the scenarios that drive it cannot either.
+      Modules and not packages because the split had to HOLD: the saga's spec used to reach into
+      the transport for the class that decides what gets published, and a package boundary cannot
+      stop that — a missing dependency can. Nothing here can see Kafka, the database or the HTTP
+      endpoints except the one module whose job that is, and neither can the scenarios.
 
-      BCE and not the five layers the identity service uses, because this one has no model worth
-      a domain: it is a process manager, its state is rows, and its policy belongs to the services
-      it commands. Five layers here would mean a package with one file in it.
+      The names are the estate's own, and that matters more than it looks: a monolith is assembled
+      by taking every service's modules UP TO AND INCLUDING application and supplying one
+      infrastructure underneath. A service that called its layers something else would not slot in.
+      (This one skips config: its numbers turned out to be constants with a written rationale
+      rather than dials — see SweepOverdue — so an empty module would be ceremony.)
 
-        entity   — the saga's data: what a case is opened with, what a confirmation lands as,
-                   what the sweeper hands back, and the facts this service states about itself
-        control  — the decisions: the three use cases and the switchboard that routes between
-                   them. Framework-free, and now unable to name a topic by construction
-        boundary — everything with the outside in it: Kafka, JDBC, Flyway, the probes, Main
+        domain         — the saga's data: what a case is opened with, what a confirmation lands
+                         as, what the sweeper hands back, and the facts this service states
+        system         — the use cases, one per door into the process manager, over the SagaStore
+                         port. Framework-free
+        application    — the orchestrator: the switchboard between those use cases, talking in
+                         Source and Destination. The scenarios and the contracts live with it
+        infrastructure — everything with the outside in it: Kafka, JDBC, Flyway, the probes, Main
     -->
     <modules>
-        <module>offboarding-entity</module>
-        <module>offboarding-control</module>
-        <module>offboarding-boundary</module>
+        <module>offboarding-domain</module>
+        <module>offboarding-system</module>
+        <module>offboarding-application</module>
+        <module>offboarding-infrastructure</module>
     </modules>
 
     <properties>
-        <mainClass>com.jrobertgardzinski.offboarding.boundary.Main</mainClass>
+        <mainClass>com.jrobertgardzinski.offboarding.infrastructure.Main</mainClass>
         <cucumber.version>7.20.1</cucumber.version>
         <junit-suite.version>6.1.2</junit-suite.version>
         <allure.version>2.35.4</allure.version>

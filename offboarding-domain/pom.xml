@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- The saga's data, and nothing else: what a case is opened with, what a confirmation lands
+         as, what the sweeper hands back, and the facts this service states about itself.
+
+         It has no dependencies at all, and that is the point rather than an accident — a type in
+         here cannot know about a broker, a database, a metric or a JSON library even by mistake.
+         The emptiest pom in the estate is the strongest guarantee in it. -->
+    <parent>
+        <groupId>com.jrobertgardzinski</groupId>
+        <artifactId>microservice-offboarding</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>offboarding-domain</artifactId>
+    <properties>
+        <offboarding.repo.root>${project.parent.basedir}</offboarding.repo.root>
+    </properties>
+</project>

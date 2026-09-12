@@ -97,7 +97,7 @@ jobs:
           # during startup — the check that exists BECAUSE `mvn verify` cannot answer "does it
           # run" was itself answering nothing.
           OFFBOARDING_PROFILE=test OFFBOARDING_PORT=18094 \
-            java -jar offboarding-boundary/target/microservice-offboarding.jar > /tmp/boot-smoke.log 2>&1 &
+            java -jar offboarding-infrastructure/target/microservice-offboarding.jar > /tmp/boot-smoke.log 2>&1 &
           pid=$!
           for attempt in $(seq 1 60); do
             curl -s -o /dev/null http://localhost:18094/alive && break

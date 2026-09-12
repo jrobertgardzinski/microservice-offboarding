@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- The ORCHESTRATOR: the switchboard that hears a message, sends it to the right use case and
+         answers with what to say next, and to whom. The saga's Gherkin scenarios and every contract
+         with a neighbour live here too, because this is the layer that owns the conversation.
+
+         It talks in Source and Destination and knows no transport — which is the whole point of
+         having it separate from infrastructure, and what lets a monolith take everything up to and
+         including this module and supply its own wiring underneath. -->
+    <parent>
+        <groupId>com.jrobertgardzinski</groupId>
+        <artifactId>microservice-offboarding</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>offboarding-application</artifactId>
+    <properties>
+        <offboarding.repo.root>${project.parent.basedir}</offboarding.repo.root>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.jrobertgardzinski</groupId>
+            <artifactId>offboarding-system</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.jrobertgardzinski</groupId>
+            <artifactId>offboarding-system</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- reading an event without letting a bad one wedge the topic, and saying what was
+                 wrong with it without putting anybody's address in the log -->
+            <groupId>com.jrobertgardzinski</groupId>
+            <artifactId>envelope</artifactId>
+            <version>1.0.0-SNAPSHOT</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
