@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.control;
 
+import com.jrobertgardzinski.offboarding.control.Destination;
+import com.jrobertgardzinski.offboarding.control.Source;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jrobertgardzinski.offboarding.control.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.control.RecordConfirmation;
@@ -41,8 +43,7 @@ class OutcomeOutboxTest {
 
     OutcomeOutboxTest() {
         Set<String> participants = Set.copyOf(TOPICS.values());
-        router = new EventsRouter(FACTS, TOPICS,
-                new BeginOffboarding(store, participants),
+        router = new EventsRouter(new BeginOffboarding(store, participants),
                 new RecordConfirmation(store, participants),
                 new SweepOverdue(store, Duration.ofMinutes(2)),
                 new ObjectMapper(),
@@ -65,16 +66,16 @@ class OutcomeOutboxTest {
     }
 
     private UUID completeASaga() {
-        router.handle(FACTS, "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
+        router.handle(Source.SECURITY, "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                 + "\"email\":\"leaver@example.com\",\"version\":1}");
-        List<EventsRouter.Outgoing> outcome = router.handle("memes-events",
+        List<EventsRouter.Outgoing> outcome = router.handle(Source.participant("memes"),
                 "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"leaver@example.com\",\"version\":1}");
         // two events, in this order: the CLOSURE that lets the participants erase for real, then
         // the single verdict security waits for. The mark was reversible up to this instant
         assertEquals(2, outcome.size(), "the completing confirmation closes the saga and announces it");
-        assertEquals(EventsRouter.COMMANDS_TOPIC, outcome.get(0).topic());
+        assertEquals(Destination.PARTICIPANTS, outcome.get(0).destination());
         assertTrue(outcome.get(0).payload().contains("\"" + EventsRouter.ERASE_COMMAND + "\""));
-        assertEquals(EventsRouter.OUTCOMES_TOPIC, outcome.get(1).topic());
+        assertEquals(Destination.SECURITY, outcome.get(1).destination());
         return outcome.get(1).announcesSaga();
     }
 
@@ -88,11 +89,11 @@ class OutcomeOutboxTest {
         // withheld together, so an unannounced outcome means the closure may be missing too — and
         // a closure nobody repeats leaves the leaver's content hidden but never erased
         assertEquals(2, swept.size(), "the sweep owes the world this closure AND this outcome");
-        assertEquals(EventsRouter.COMMANDS_TOPIC, swept.get(0).topic());
+        assertEquals(Destination.PARTICIPANTS, swept.get(0).destination());
         assertTrue(swept.get(0).payload().contains("\"" + EventsRouter.ERASE_COMMAND + "\""));
         assertEquals(sagaId, swept.get(0).partOfSaga(),
                 "the re-commanded closure shares the outcome's fate at the outbox");
-        assertEquals(EventsRouter.OUTCOMES_TOPIC, swept.get(1).topic());
+        assertEquals(Destination.SECURITY, swept.get(1).destination());
         assertTrue(swept.get(1).payload().contains("\"PORTAL_CONTENT_PURGED\""));
         assertEquals(sagaId, swept.get(1).announcesSaga(),
                 "the re-published outcome names its saga so the loop can settle the mark");
@@ -116,12 +117,11 @@ class OutcomeOutboxTest {
 
     @Test
     void the_instantly_clean_outcome_rides_the_same_outbox() {
-        EventsRouter bare = new EventsRouter(FACTS, Map.of(),
-                new BeginOffboarding(store, Set.of()),
+        EventsRouter bare = new EventsRouter(new BeginOffboarding(store, Set.of()),
                 new RecordConfirmation(store, Set.of()),
                 new SweepOverdue(store, Duration.ofMinutes(2)),
                 new ObjectMapper(), Clock.fixed(now, ZoneOffset.UTC));
-        List<EventsRouter.Outgoing> out = bare.handle(FACTS,
+        List<EventsRouter.Outgoing> out = bare.handle(Source.SECURITY,
                 "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                         + "\"email\":\"leaver@example.com\",\"version\":1}");
         assertEquals(store.all().get(0).id, out.get(0).announcesSaga(),

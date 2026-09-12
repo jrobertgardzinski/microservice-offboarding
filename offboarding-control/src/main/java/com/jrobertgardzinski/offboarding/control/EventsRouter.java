@@ -34,8 +34,8 @@ import java.util.UUID;
 /**
  * The saga's switchboard, pure and broker-free so the Gherkin scenarios and the pact tests drive
  * it directly. In: security's {@code ACCOUNT_DELETION_REQUESTED} fact and the participants'
- * {@code USER_CONTENT_PURGED} confirmations (participant = topic, exactly as before the
- * extraction). Out: the {@code PURGE_USER_CONTENT} command — byte-compatible with the one
+ * {@code USER_CONTENT_PURGED} confirmations (each named by the {@link Source} it came from — the
+ * adapter decides what a source is). Out: the {@code PURGE_USER_CONTENT} command — byte-compatible with the one
  * security's orchestrator used to emit, so the participants never noticed the changing of the
  * guard — and the single outcome security waits for: {@code PORTAL_CONTENT_PURGED} or
  * {@code PORTAL_PURGE_FAILED}. The leaver's policy choices ride the command verbatim — their
@@ -49,8 +49,6 @@ import java.util.UUID;
  */
 public class EventsRouter {
 
-    public static final String COMMANDS_TOPIC = "content-commands";
-    public static final String OUTCOMES_TOPIC = "offboarding-events";
 
     /**
      * The basis a closure was requested under, as it travels from security's fact onto every
@@ -104,19 +102,19 @@ public class EventsRouter {
      * proven delivered ({@link com.jrobertgardzinski.offboarding.control.SagaStore#retryDelivered}).
      * Everything else leaves both null.
      */
-    public record Outgoing(String topic, String key, String payload, UUID announcesSaga,
+    public record Outgoing(Destination destination, String key, String payload, UUID announcesSaga,
                            UUID countsRetryFor, UUID partOfSaga) {
-        public Outgoing(String topic, String key, String payload) {
-            this(topic, key, payload, null, null, null);
+        public Outgoing(Destination destination, String key, String payload) {
+            this(destination, key, payload, null, null, null);
         }
 
-        public Outgoing(String topic, String key, String payload, UUID announcesSaga) {
-            this(topic, key, payload, announcesSaga, null, announcesSaga);
+        public Outgoing(Destination destination, String key, String payload, UUID announcesSaga) {
+            this(destination, key, payload, announcesSaga, null, announcesSaga);
         }
 
-        public Outgoing(String topic, String key, String payload, UUID announcesSaga,
+        public Outgoing(Destination destination, String key, String payload, UUID announcesSaga,
                         UUID countsRetryFor) {
-            this(topic, key, payload, announcesSaga, countsRetryFor,
+            this(destination, key, payload, announcesSaga, countsRetryFor,
                     announcesSaga != null ? announcesSaga : countsRetryFor);
         }
 
@@ -128,15 +126,14 @@ public class EventsRouter {
          * of its two messages missing and nothing left to re-publish it. Naming the saga here lets
          * the loop withhold the mark from ALL of a saga's events when ANY of them is undelivered.
          */
-        public static Outgoing command(String topic, String key, String payload, UUID sagaId) {
-            return new Outgoing(topic, key, payload, null, null, sagaId);
+        public static Outgoing command(Destination destination, String key, String payload,
+                                       UUID sagaId) {
+            return new Outgoing(destination, key, payload, null, null, sagaId);
         }
     }
 
     private static final Logger LOG = LoggerFactory.getLogger(EventsRouter.class);
 
-    private final String factsTopic;
-    private final Map<String, String> participantByTopic;
     private final BeginOffboarding begin;
     private final RecordConfirmation confirm;
     private final SweepOverdue sweep;
@@ -145,11 +142,9 @@ public class EventsRouter {
     /** Where this router STATES what it noticed; the adapter decides these are counters. */
     private final Observations<Observation> observations;
 
-    public EventsRouter(String factsTopic, Map<String, String> participantByTopic,
-                        BeginOffboarding begin, RecordConfirmation confirm, SweepOverdue sweep,
+    public EventsRouter(BeginOffboarding begin, RecordConfirmation confirm, SweepOverdue sweep,
                         ObjectMapper mapper, Clock clock) {
-        this(factsTopic, participantByTopic, begin, confirm, sweep, mapper, clock,
-                Observations.<Observation>silent());
+        this(begin, confirm, sweep, mapper, clock, Observations.<Observation>silent());
     }
 
     /**
@@ -157,12 +152,9 @@ public class EventsRouter {
      * argument because the facts are the caller's to collect: every test here drives the router
      * unwatched, which is the boundary this design promises and the cheapest possible proof of it.
      */
-    public EventsRouter(String factsTopic, Map<String, String> participantByTopic,
-                        BeginOffboarding begin, RecordConfirmation confirm, SweepOverdue sweep,
+    public EventsRouter(BeginOffboarding begin, RecordConfirmation confirm, SweepOverdue sweep,
                         ObjectMapper mapper, Clock clock, Observations<Observation> observations) {
         this.observations = observations;
-        this.factsTopic = factsTopic;
-        this.participantByTopic = participantByTopic;
         this.begin = begin;
         this.confirm = confirm;
         this.sweep = sweep;
@@ -170,29 +162,35 @@ public class EventsRouter {
         this.clock = clock;
     }
 
-    /** Route one consumed record to its use case; returns what to publish in response. */
-    public List<Outgoing> handle(String topic, String payload) {
-        JsonNode event;
+    /**
+     * Route one message to its use case; returns what to say in response, and to whom.
+     *
+     * <p>{@link Source} rather than a topic name, because which arrival is whose is the
+     * deployment's shape and not the saga's: between services an adapter reads it off a topic, in
+     * one process off whichever module handed the message over. While this method took a topic, the
+     * orchestrator held the topology — and a monolith would have had to invent Kafka topics for a
+     * saga talking to itself.
+     */
+    public List<Outgoing> handle(Source source, String payload) {
         Outcome<Envelope> read = Envelope.read(payload, mapper);
         if (read.findValue().isEmpty()) {
             // its SIZE, never its text: an unparsed payload is of unknown shape, so the scrubber
             // has the least idea what it is looking at, and a newline in it would become a new log
             // LINE — a forged ERROR planted in an operator's view
-            LOG.warn("dropping an unreadable event on {} ({}): {}", topic,
+            LOG.warn("dropping an unreadable message from {} ({}): {}", source,
                     Masked.sizeOf(payload), read.errorCodes());
             return List.of();
         }
         Envelope envelope = read.findValue().orElseThrow();
-        event = envelope.node();
         String type = envelope.type();
-        if (topic.equals(factsTopic) && "ACCOUNT_DELETION_REQUESTED".equals(type)) {
-            return onDeletionRequested(envelope);
-        }
-        String participant = participantByTopic.get(topic);
-        if (participant != null && "USER_CONTENT_PURGED".equals(type)) {
-            return onConfirmation(envelope, participant);
-        }
-        return List.of();   // other lifecycle events share these topics; not ours
+        return switch (source) {
+            case Source.Security ignored when "ACCOUNT_DELETION_REQUESTED".equals(type) ->
+                    onDeletionRequested(envelope);
+            case Source.Participant participant when "USER_CONTENT_PURGED".equals(type) ->
+                    onConfirmation(envelope, participant.name());
+            // the other lifecycle events of whoever sent this share the same road; not ours
+            default -> List.of();
+        };
     }
 
     /**
@@ -369,7 +367,7 @@ public class EventsRouter {
     }
 
     private Outgoing purgeCommand(UUID sagaId, String email, JsonNode policy, String initiatedBy) {
-        return new Outgoing(COMMANDS_TOPIC, email,
+        return new Outgoing(Destination.PARTICIPANTS, email,
                 commandPayload(MARK_COMMAND, sagaId, email, policy, initiatedBy));
     }
 
@@ -388,7 +386,7 @@ public class EventsRouter {
      */
     private Outgoing participantCommand(String type, UUID sagaId, String email, String storedPolicy,
                                         String initiatedBy) {
-        return Outgoing.command(COMMANDS_TOPIC, email,
+        return Outgoing.command(Destination.PARTICIPANTS, email,
                 commandPayload(type, sagaId, email, storedPolicy(sagaId, storedPolicy), initiatedBy),
                 sagaId);
     }
@@ -401,7 +399,7 @@ public class EventsRouter {
      */
     private Outgoing purgeRetryCommand(UUID sagaId, String email, String storedPolicy,
                                        String initiatedBy) {
-        return new Outgoing(COMMANDS_TOPIC, email,
+        return new Outgoing(Destination.PARTICIPANTS, email,
                 commandPayload(MARK_COMMAND, sagaId, email, storedPolicy(sagaId, storedPolicy),
                         initiatedBy),
                 null, sagaId);
@@ -472,7 +470,7 @@ public class EventsRouter {
             ArrayNode names = node.putArray("confirmed");
             new TreeSet<>(confirmed).forEach(names::add);
         }
-        return new Outgoing(OUTCOMES_TOPIC, email, write(node), sagaId);
+        return new Outgoing(Destination.SECURITY, email, write(node), sagaId);
     }
 
 

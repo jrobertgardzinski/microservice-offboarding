@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.control;
 
+import com.jrobertgardzinski.offboarding.control.Destination;
+import com.jrobertgardzinski.offboarding.control.Source;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jrobertgardzinski.offboarding.control.BeginOffboarding;
@@ -51,8 +53,7 @@ class VerdictCorrelationTest {
 
     VerdictCorrelationTest() {
         Set<String> participants = Set.copyOf(TOPICS.values());
-        router = new EventsRouter(FACTS, TOPICS,
-                new BeginOffboarding(store, participants),
+        router = new EventsRouter(new BeginOffboarding(store, participants),
                 new RecordConfirmation(store, participants),
                 new SweepOverdue(store, TIMEOUT),
                 mapper, movingClock());
@@ -80,8 +81,8 @@ class VerdictCorrelationTest {
     @Test
     void the_completion_verdict_echoes_the_handle_from_the_fact() throws Exception {
         UUID securitySaga = UUID.randomUUID();
-        router.handle(FACTS, fact(UUID.randomUUID(), securitySaga));
-        List<EventsRouter.Outgoing> out = router.handle("memes-events",
+        router.handle(Source.SECURITY, fact(UUID.randomUUID(), securitySaga));
+        List<EventsRouter.Outgoing> out = router.handle(Source.participant("memes"),
                 "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + LEAVER + "\",\"version\":1}");
         // onOutcomes, not get(0): the completing confirmation now emits the CLOSURE command first
         // and the verdict second — the correlation belongs to the verdict
@@ -92,7 +93,7 @@ class VerdictCorrelationTest {
     @Test
     void the_failure_verdict_and_its_republication_echo_the_handle_too() throws Exception {
         UUID securitySaga = UUID.randomUUID();
-        router.handle(FACTS, fact(UUID.randomUUID(), securitySaga));
+        router.handle(Source.SECURITY, fact(UUID.randomUUID(), securitySaga));
         // silence: one deadline per retry, plus the one that capitulates
         List<EventsRouter.Outgoing> verdicts = List.of();
         for (int deadline = 0; deadline <= SweepOverdue.DEFAULT_MAX_RETRIES; deadline++) {
@@ -112,14 +113,13 @@ class VerdictCorrelationTest {
     @Test
     void the_instantly_clean_verdict_echoes_the_handle_and_is_announced_once() throws Exception {
         // a portal with no content participants: the saga completes on the spot
-        EventsRouter bare = new EventsRouter(FACTS, Map.of(),
-                new BeginOffboarding(store, Set.of()),
+        EventsRouter bare = new EventsRouter(new BeginOffboarding(store, Set.of()),
                 new RecordConfirmation(store, Set.of()),
                 new SweepOverdue(store, TIMEOUT), mapper, movingClock());
         UUID securitySaga = UUID.randomUUID();
         UUID factId = UUID.randomUUID();
 
-        List<EventsRouter.Outgoing> first = bare.handle(FACTS, fact(factId, securitySaga));
+        List<EventsRouter.Outgoing> first = bare.handle(Source.SECURITY, fact(factId, securitySaga));
         assertEquals(securitySaga.toString(), payload(first.get(0)).path("sagaId").asText(),
                 "even the shortcut verdict must name its request");
 
@@ -127,17 +127,17 @@ class VerdictCorrelationTest {
         // this replay may NOT put a second verdict on the wire: the store's answer is the whole
         // point of asking it
         now = now.plusSeconds(5);
-        assertEquals(List.of(), bare.handle(FACTS, fact(factId, securitySaga)),
+        assertEquals(List.of(), bare.handle(Source.SECURITY, fact(factId, securitySaga)),
                 "a replayed fact must not announce the outcome a second time");
     }
 
     @Test
     void a_fact_without_a_handle_still_opens_a_saga_and_its_verdict_carries_none() throws Exception {
         // an older producer: correlation is defence in depth, not a precondition for deleting
-        router.handle(FACTS, "{\"id\":\"" + UUID.randomUUID() + "\","
+        router.handle(Source.SECURITY, "{\"id\":\"" + UUID.randomUUID() + "\","
                 + "\"type\":\"ACCOUNT_DELETION_REQUESTED\",\"email\":\"" + LEAVER
                 + "\",\"version\":1}");
-        List<EventsRouter.Outgoing> out = router.handle("memes-events",
+        List<EventsRouter.Outgoing> out = router.handle(Source.participant("memes"),
                 "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + LEAVER + "\",\"version\":1}");
         assertFalse(payload(onOutcomes(out)).has("sagaId"),
                 "no handle to echo means no field — never an invented one");
@@ -147,7 +147,7 @@ class VerdictCorrelationTest {
     void a_fact_with_a_mangled_handle_is_a_poison_pill() {
         // proceeding would purge the content under a verdict nobody can match: security's own
         // timeout then restores the account and apologises for content that is already gone
-        assertEquals(List.of(), router.handle(FACTS, "{\"id\":\"" + UUID.randomUUID() + "\","
+        assertEquals(List.of(), router.handle(Source.SECURITY, "{\"id\":\"" + UUID.randomUUID() + "\","
                 + "\"sagaId\":\"not-a-uuid\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                 + "\"email\":\"" + LEAVER + "\",\"version\":1}"));
         assertTrue(store.all().isEmpty(), "and no saga may open");
@@ -166,7 +166,7 @@ class VerdictCorrelationTest {
 
     private static EventsRouter.Outgoing onOutcomes(List<EventsRouter.Outgoing> out) {
         return out.stream()
-                .filter(outgoing -> EventsRouter.OUTCOMES_TOPIC.equals(outgoing.topic()))
+                .filter(outgoing -> Destination.SECURITY.equals(outgoing.destination()))
                 .findFirst().orElseThrow();
     }
 

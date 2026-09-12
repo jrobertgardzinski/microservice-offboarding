@@ -27,8 +27,7 @@ public final class RouterFixture {
 
     private RouterFixture(int maxRetries) {
         Set<String> participants = Set.copyOf(PARTICIPANT_BY_TOPIC.values());
-        router = new EventsRouter(FACTS_TOPIC, PARTICIPANT_BY_TOPIC,
-                new BeginOffboarding(store, participants),
+        router = new EventsRouter(new BeginOffboarding(store, participants),
                 new RecordConfirmation(store, participants),
                 new SweepOverdue(store, Duration.ofMinutes(2), maxRetries,
                         SweepOverdue.DEFAULT_REPUBLISH_AFTER, SweepOverdue.DEFAULT_RETENTION),

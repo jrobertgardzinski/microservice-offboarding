@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.boundary;
 
+import com.jrobertgardzinski.offboarding.control.Destination;
+import com.jrobertgardzinski.offboarding.control.Source;
 import com.jrobertgardzinski.offboarding.control.EventsRouter;
 import com.jrobertgardzinski.observation.Observations;
 import com.jrobertgardzinski.offboarding.entity.Observation;
@@ -75,13 +77,13 @@ class ObservabilityIsOptionalTest {
         // the fixture uses the constructor without a watcher, and the whole case still travels:
         // a deletion fact in, a purge command out. An unobserved orchestrator is an orchestrator
         // nobody is watching, not a broken one
-        List<EventsRouter.Outgoing> out = unwatched.router.handle(RouterFixture.FACTS_TOPIC,
+        List<EventsRouter.Outgoing> out = unwatched.router.handle(Source.SECURITY,
                 "{\"id\":\"" + java.util.UUID.randomUUID() + "\","
                         + "\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                         + "\"email\":\"leaver@example.com\",\"version\":1}");
 
         assertEquals(1, out.size());
-        assertEquals(EventsRouter.COMMANDS_TOPIC, out.getFirst().topic());
+        assertEquals(Destination.PARTICIPANTS, out.getFirst().destination());
         assertTrue(out.getFirst().payload().contains("PURGE_USER_CONTENT"), out.getFirst().payload());
     }
 

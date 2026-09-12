@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -39,7 +40,8 @@ class ProbeShutdownShieldTest {
 
     private final RouterFixture fixture = RouterFixture.router();
     private final KafkaLoop loop = new KafkaLoop(
-            fixture.router, fixture.store, List.of("security-events"), Duration.ofSeconds(15),
+            fixture.router, fixture.store, new SagaTopics("security-events", Map.of()),
+            Duration.ofSeconds(15),
             com.jrobertgardzinski.observation.Observations.<Observation>silent());
 
     @AfterEach

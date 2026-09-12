@@ -151,14 +151,14 @@ class KafkaLoopIntegrationTest {
         String memesTopic = "memes-events-" + run;
         String commentsTopic = "comments-events-" + run;
         createTopics(facts, memesTopic, commentsTopic,
-                EventsRouter.COMMANDS_TOPIC, EventsRouter.OUTCOMES_TOPIC);
+                SagaTopics.CONTENT_COMMANDS, SagaTopics.OFFBOARDING_EVENTS);
         startLoop(store, facts, Map.of(memesTopic, "memes", commentsTopic, "comments"),
                 Duration.ofHours(1), new SweepOverdue(store, Duration.ofMinutes(5)));
 
         produce(facts, email, deletionFact(UUID.randomUUID(), email,
                 ",\"policy\":{\"memes\":\"DELETE_ALL\"}"));
 
-        JsonNode command = readMatching(EventsRouter.COMMANDS_TOPIC, Set.of(email), 1,
+        JsonNode command = readMatching(SagaTopics.CONTENT_COMMANDS, Set.of(email), 1,
                 GENEROUS, Duration.ZERO).getFirst();
         assertEquals("PURGE_USER_CONTENT", command.path("type").asText());
         UUID sagaId = UUID.fromString(command.path("sagaId").asText());
@@ -168,7 +168,7 @@ class KafkaLoopIntegrationTest {
         produce(memesTopic, email, confirmation(email, sagaId));
         produce(commentsTopic, email, confirmation(email, sagaId));
 
-        JsonNode outcome = readMatching(EventsRouter.OUTCOMES_TOPIC, Set.of(email), 1,
+        JsonNode outcome = readMatching(SagaTopics.OFFBOARDING_EVENTS, Set.of(email), 1,
                 GENEROUS, Duration.ZERO).getFirst();
         assertEquals("PORTAL_CONTENT_PURGED", outcome.path("type").asText());
         awaitTrue("saga COMPLETED and its outcome marked announced", GENEROUS,
@@ -191,12 +191,12 @@ class KafkaLoopIntegrationTest {
         assertEquals("COMPLETED", sagaState(email));
         assertFalse(announced(email), "the seed must model the crash BEFORE the announced mark");
 
-        createTopics(facts, memesTopic, EventsRouter.OUTCOMES_TOPIC);
+        createTopics(facts, memesTopic, SagaTopics.OFFBOARDING_EVENTS);
         startLoop(store, facts, Map.of(memesTopic, "memes"), Duration.ofMillis(300),
                 new SweepOverdue(store, Duration.ofMinutes(5), 3, Duration.ofSeconds(1),
                         SweepOverdue.DEFAULT_RETENTION));
 
-        JsonNode outcome = readMatching(EventsRouter.OUTCOMES_TOPIC, Set.of(email), 1,
+        JsonNode outcome = readMatching(SagaTopics.OFFBOARDING_EVENTS, Set.of(email), 1,
                 GENEROUS, Duration.ZERO).getFirst();
         assertEquals("PORTAL_CONTENT_PURGED", outcome.path("type").asText(),
                 "the sweeper must re-announce the COMPLETED outcome, not invent another");
@@ -215,7 +215,7 @@ class KafkaLoopIntegrationTest {
         String facts = "security-events-" + run;
         String memesTopic = "memes-events-" + run;
         Map<String, String> participants = Map.of(memesTopic, "memes");
-        createTopics(facts, memesTopic, EventsRouter.COMMANDS_TOPIC);
+        createTopics(facts, memesTopic, SagaTopics.CONTENT_COMMANDS);
         KafkaLoop first = startLoop(store, facts, participants, Duration.ofHours(1),
                 new SweepOverdue(store, Duration.ofMinutes(5)));
 
@@ -225,7 +225,7 @@ class KafkaLoopIntegrationTest {
                 + "\",\"version\":1}");
         produce(facts, emailA, deletionFact(UUID.randomUUID(), emailA, ""));
 
-        readMatching(EventsRouter.COMMANDS_TOPIC, Set.of(emailA), 1, GENEROUS, Duration.ZERO);
+        readMatching(SagaTopics.CONTENT_COMMANDS, Set.of(emailA), 1, GENEROUS, Duration.ZERO);
         assertEquals(0, sagaCount(poisonEmail), "a dropped pill must open no saga");
         // the pill's offset must be COMMITTED, not merely skipped in memory
         awaitTrue("the committed offset moves past both records", GENEROUS,
@@ -237,9 +237,9 @@ class KafkaLoopIntegrationTest {
         startLoop(store, facts, participants, Duration.ofHours(1),
                 new SweepOverdue(store, Duration.ofMinutes(5)));
         produce(facts, emailB, deletionFact(UUID.randomUUID(), emailB, ""));
-        readMatching(EventsRouter.COMMANDS_TOPIC, Set.of(emailB), 1, GENEROUS, Duration.ZERO);
+        readMatching(SagaTopics.CONTENT_COMMANDS, Set.of(emailB), 1, GENEROUS, Duration.ZERO);
 
-        List<JsonNode> allCommands = readMatching(EventsRouter.COMMANDS_TOPIC,
+        List<JsonNode> allCommands = readMatching(SagaTopics.CONTENT_COMMANDS,
                 Set.of(poisonEmail, emailA, emailB), 2, GENEROUS, Duration.ofSeconds(2));
         assertEquals(2, allCommands.size(),
                 "exactly one command per good fact: the restart reprocessed neither the pill nor "
@@ -255,7 +255,7 @@ class KafkaLoopIntegrationTest {
         String email = "toolarge-" + run + "@example.com";
         String facts = "security-events-" + run;
         String memesTopic = "memes-events-" + run;
-        createTopics(facts, memesTopic, EventsRouter.COMMANDS_TOPIC, EventsRouter.OUTCOMES_TOPIC);
+        createTopics(facts, memesTopic, SagaTopics.CONTENT_COMMANDS, SagaTopics.OFFBOARDING_EVENTS);
         try {
             // choke the outcomes topic: max.message.bytes so small NOTHING fits, so every send
             // fails deterministically with RecordTooLargeException — the failure flush() never
@@ -267,7 +267,7 @@ class KafkaLoopIntegrationTest {
                             SweepOverdue.DEFAULT_RETENTION));
 
             produce(facts, email, deletionFact(UUID.randomUUID(), email, ""));
-            JsonNode command = readMatching(EventsRouter.COMMANDS_TOPIC, Set.of(email), 1,
+            JsonNode command = readMatching(SagaTopics.CONTENT_COMMANDS, Set.of(email), 1,
                     GENEROUS, Duration.ZERO).getFirst();
             UUID sagaId = UUID.fromString(command.path("sagaId").asText());
             produce(memesTopic, email, confirmation(email, sagaId));
@@ -280,7 +280,7 @@ class KafkaLoopIntegrationTest {
             assertEquals("COMPLETED", sagaState(email));
             assertFalse(announced(email),
                     "a saga whose outcome never reached the broker must stay unannounced");
-            assertEquals(0, readMatching(EventsRouter.OUTCOMES_TOPIC, Set.of(email), 0,
+            assertEquals(0, readMatching(SagaTopics.OFFBOARDING_EVENTS, Set.of(email), 0,
                             Duration.ofSeconds(2), Duration.ofSeconds(2)).size(),
                     "no outcome can have landed on a topic that rejects every record");
         } finally {
@@ -289,7 +289,7 @@ class KafkaLoopIntegrationTest {
 
         // with the limit restored the sweeper delivers the owed outcome, and only a REAL
         // delivery earns the announced mark (the leash covers the sweeper's grown backoff)
-        JsonNode outcome = readMatching(EventsRouter.OUTCOMES_TOPIC, Set.of(email), 1,
+        JsonNode outcome = readMatching(SagaTopics.OFFBOARDING_EVENTS, Set.of(email), 1,
                 Duration.ofSeconds(45), Duration.ZERO).getFirst();
         assertEquals("PORTAL_CONTENT_PURGED", outcome.path("type").asText());
         awaitTrue("the announced mark settles only after the repair", Duration.ofSeconds(45),
@@ -305,7 +305,7 @@ class KafkaLoopIntegrationTest {
         String email = "deadair-" + run + "@example.com";
         String facts = "security-events-" + run;
         String memesTopic = "memes-events-" + run;
-        createTopics(facts, memesTopic, EventsRouter.COMMANDS_TOPIC, EventsRouter.OUTCOMES_TOPIC);
+        createTopics(facts, memesTopic, SagaTopics.CONTENT_COMMANDS, SagaTopics.OFFBOARDING_EVENTS);
         // a saga already long overdue when the loop wakes up — the sweeper's case from sweep one
         store.start(UUID.randomUUID(), email, Instant.now().minusSeconds(600));
         long meteredBefore = retriesDeliveredMetric();
@@ -315,7 +315,7 @@ class KafkaLoopIntegrationTest {
             // retry but none is ever delivered. Under the old count-on-sweep semantics,
             // maxRetries=1 would compensate on the second sweep without ONE re-command on the
             // wire; the delivered-first counter must not move at all
-            topicMaxMessageBytes(EventsRouter.COMMANDS_TOPIC, "1");
+            topicMaxMessageBytes(SagaTopics.CONTENT_COMMANDS, "1");
             // a 2s purge timeout, not the 5 minutes the other cases use: the deadline is measured
             // from the last DELIVERED re-command now, so a delivered retry buys the participant a
             // whole timeout before the sweeper may decide anything again. With 5 minutes this test
@@ -331,13 +331,13 @@ class KafkaLoopIntegrationTest {
             assertEquals("STARTED", sagaState(email), "the saga must keep waiting for its retry — "
                     + "compensating with no re-command on the wire is the regression this pins");
         } finally {
-            topicMaxMessageBytes(EventsRouter.COMMANDS_TOPIC, null);   // repair — and cleanup
+            topicMaxMessageBytes(SagaTopics.CONTENT_COMMANDS, null);   // repair — and cleanup
         }
 
         // with the broker repaired the retry is DELIVERED, and only then counted; the silence
         // persists, so the honestly-spent counter lets a following sweep capitulate for real
         // (the long leashes cover the sweeper's grown backoff)
-        readMatching(EventsRouter.COMMANDS_TOPIC, Set.of(email), 1, Duration.ofSeconds(45),
+        readMatching(SagaTopics.CONTENT_COMMANDS, Set.of(email), 1, Duration.ofSeconds(45),
                 Duration.ZERO);
         awaitTrue("the delivered retry is counted", Duration.ofSeconds(45),
                 () -> retriesInDb(email) >= 1);
@@ -362,7 +362,7 @@ class KafkaLoopIntegrationTest {
 
     /** SET a max.message.bytes override on the shared outcomes topic, or DELETE it (null). */
     private static void outcomesTopicMaxMessageBytes(String value) throws Exception {
-        topicMaxMessageBytes(EventsRouter.OUTCOMES_TOPIC, value);
+        topicMaxMessageBytes(SagaTopics.OFFBOARDING_EVENTS, value);
     }
 
     /** SET a max.message.bytes override on a shared topic, or DELETE it (null). */
@@ -383,14 +383,14 @@ class KafkaLoopIntegrationTest {
         String facts = "security-events-" + run;
         String memesTopic = "memes-events-" + run;
         FailingFirstStore flaky = new FailingFirstStore(store, 2);
-        createTopics(facts, memesTopic, EventsRouter.COMMANDS_TOPIC);
+        createTopics(facts, memesTopic, SagaTopics.CONTENT_COMMANDS);
         KafkaLoop loop = startLoop(flaky, facts, Map.of(memesTopic, "memes"), Duration.ofHours(1),
                 new SweepOverdue(flaky, Duration.ofMinutes(5)));
 
         produce(facts, email, deletionFact(UUID.randomUUID(), email, ""));
 
         // two failed passes back off 1s + 2s before the third succeeds — hence the long leash
-        List<JsonNode> commands = readMatching(EventsRouter.COMMANDS_TOPIC, Set.of(email), 1,
+        List<JsonNode> commands = readMatching(SagaTopics.CONTENT_COMMANDS, Set.of(email), 1,
                 Duration.ofSeconds(45), Duration.ofSeconds(2));
         assertEquals(0, flaky.failuresLeft(), "the outage must actually have been exercised");
         // the guarantee is the final state, not the number of attempts: one saga, once
@@ -441,7 +441,7 @@ class KafkaLoopIntegrationTest {
         String email = "wedged-" + run + "@example.com";
         String facts = "security-events-" + run;
         String memesTopic = "memes-events-" + run;
-        createTopics(facts, memesTopic, EventsRouter.COMMANDS_TOPIC);
+        createTopics(facts, memesTopic, SagaTopics.CONTENT_COMMANDS);
         // a store that never recovers: every consumer pass over the fact fails and backs off —
         // the situation where /health must scream 503 while /alive must NOT invite a restart
         // (bouncing the process would not fix the store)
@@ -480,11 +480,11 @@ class KafkaLoopIntegrationTest {
         // clocks bounded well inside the observed tolerance
         Duration deliveryTimeout = Duration.ofSeconds(2);
         String facts = "security-events-" + run;
-        EventsRouter router = new EventsRouter(facts, Map.of(),
-                new BeginOffboarding(store, Set.of()),
+        EventsRouter router = new EventsRouter(new BeginOffboarding(store, Set.of()),
                 new RecordConfirmation(store, Set.of()),
                 new SweepOverdue(store, Duration.ofMinutes(5)), MAPPER, Clock.systemUTC());
-        KafkaLoop loop = new KafkaLoop(router, store, List.of(facts), Duration.ofMillis(200),
+        KafkaLoop loop = new KafkaLoop(router, store, new SagaTopics(facts, Map.of()),
+                Duration.ofMillis(200),
                 deliveryTimeout, Duration.ofSeconds(1), deliveryTimeout, Duration.ofSeconds(1),
                 com.jrobertgardzinski.observation.Observations.<Observation>silent());
         loop.start("localhost:1");
@@ -517,11 +517,11 @@ class KafkaLoopIntegrationTest {
         // stamped a COMPLETED pass every second — /health answered 200 straight through an
         // outage it promises to report (the same lie collections' quiet topic used to tell).
         // The sweeper sleeps an hour, so the verdict below is the consumer's alone
-        EventsRouter router = new EventsRouter(facts, Map.of(),
-                new BeginOffboarding(store, Set.of()),
+        EventsRouter router = new EventsRouter(new BeginOffboarding(store, Set.of()),
                 new RecordConfirmation(store, Set.of()),
                 new SweepOverdue(store, Duration.ofMinutes(5)), MAPPER, Clock.systemUTC());
-        KafkaLoop loop = new KafkaLoop(router, store, List.of(facts), Duration.ofHours(1),
+        KafkaLoop loop = new KafkaLoop(router, store, new SagaTopics(facts, Map.of()),
+                Duration.ofHours(1),
                 Duration.ofSeconds(2), Duration.ofSeconds(1), Duration.ofSeconds(2),
                 Duration.ofSeconds(1),   // the seam: 1s of probe patience instead of 5
                 com.jrobertgardzinski.observation.Observations.<Observation>silent());
@@ -553,7 +553,7 @@ class KafkaLoopIntegrationTest {
         String run = run();
         String email = "sweepcid-" + run + "@example.com";
         String facts = "security-events-" + run;
-        createTopics(facts, EventsRouter.COMMANDS_TOPIC);
+        createTopics(facts, SagaTopics.CONTENT_COMMANDS);
         // an already-overdue saga, so the first sweep re-commands it. This is the path that used to
         // go out bare: the consumer propagates the cid of the record it handles, the sweeper had
         // none to propagate and sent nothing — so a re-command, a capitulation and every
@@ -565,7 +565,7 @@ class KafkaLoopIntegrationTest {
                 new SweepOverdue(store, Duration.ofMinutes(5)));
 
         ConsumerRecord<String, String> recommand = readMatchingRecords(
-                EventsRouter.COMMANDS_TOPIC, Set.of(email), 1, GENEROUS, Duration.ZERO).getFirst();
+                SagaTopics.CONTENT_COMMANDS, Set.of(email), 1, GENEROUS, Duration.ZERO).getFirst();
 
         String cid = cidHeader(recommand);
         assertNotNull(cid, "a sweeper re-command must carry " + KafkaLoop.CID_HEADER
@@ -588,13 +588,11 @@ class KafkaLoopIntegrationTest {
                                 Map<String, String> participantByTopic, Duration sweepEvery,
                                 SweepOverdue sweep) {
         Set<String> participants = Set.copyOf(participantByTopic.values());
-        EventsRouter router = new EventsRouter(factsTopic, participantByTopic,
-                new BeginOffboarding(sagaStore, participants),
+        EventsRouter router = new EventsRouter(new BeginOffboarding(sagaStore, participants),
                 new RecordConfirmation(sagaStore, participants),
                 sweep, MAPPER, Clock.systemUTC(), observations);
-        List<String> topics = new ArrayList<>(participantByTopic.keySet());
-        topics.add(factsTopic);
-        KafkaLoop loop = new KafkaLoop(router, sagaStore, topics, sweepEvery, observations);
+        KafkaLoop loop = new KafkaLoop(router, sagaStore,
+                new SagaTopics(factsTopic, participantByTopic), sweepEvery, observations);
         loop.start(KAFKA.getBootstrapServers());
         loops.add(loop);
         return loop;

@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.control;
 
+import com.jrobertgardzinski.offboarding.control.Destination;
+import com.jrobertgardzinski.offboarding.control.Source;
 import au.com.dius.pact.consumer.MessagePactBuilder;
 import au.com.dius.pact.consumer.dsl.PactDslJsonBody;
 import au.com.dius.pact.consumer.junit5.PactConsumerTestExt;
@@ -80,9 +82,9 @@ class DeletionRequestContractTest {
     void theFactOpensTheSagaAndCommandsThePurge(List<Message> messages) {
         RouterFixture fixture = router();
         List<EventsRouter.Outgoing> out =
-                fixture.router.handle(RouterFixture.FACTS_TOPIC, messages.get(0).contentsAsString());
+                fixture.router.handle(Source.SECURITY, messages.get(0).contentsAsString());
         assertEquals(1, out.size());
-        assertEquals(EventsRouter.COMMANDS_TOPIC, out.get(0).topic());
+        assertEquals(Destination.PARTICIPANTS, out.get(0).destination());
         assertTrue(out.get(0).payload().contains("\"PURGE_USER_CONTENT\""));
         assertTrue(out.get(0).payload().contains("\"initiatedBy\":\"SELF\""),
                 "the basis rides every command, not only the closure: " + out.get(0).payload());
@@ -93,7 +95,7 @@ class DeletionRequestContractTest {
     void theLeaversChoicesRideTheCommand(List<Message> messages) {
         RouterFixture fixture = router();
         List<EventsRouter.Outgoing> out =
-                fixture.router.handle(RouterFixture.FACTS_TOPIC, messages.get(0).contentsAsString());
+                fixture.router.handle(Source.SECURITY, messages.get(0).contentsAsString());
         assertEquals(1, out.size());
         assertTrue(out.get(0).payload().contains("\"policy\""), "the choices must be ferried");
         assertTrue(out.get(0).payload().contains("\"initiatedBy\":\"ADMIN\""),

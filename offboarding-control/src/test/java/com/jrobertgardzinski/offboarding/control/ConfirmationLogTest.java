@@ -1,5 +1,6 @@
 package com.jrobertgardzinski.offboarding.control;
 
+import com.jrobertgardzinski.offboarding.control.Source;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
@@ -50,7 +51,7 @@ class ConfirmationLogTest {
     @Test
     void a_recorded_confirmation_says_it_was_recorded() {
         RouterFixture fixture = router().withRunningSagaFor(LEAVER);
-        fixture.router.handle("memes-events", confirmation(fixture.store.all().get(0).id));
+        fixture.router.handle(Source.participant("memes"), confirmation(fixture.store.all().get(0).id));
         assertTrue(logged("recorded memes purge confirmation"),
                 "a confirmation that landed on a saga is progress and must read like it: " + logged());
     }
@@ -59,7 +60,7 @@ class ConfirmationLogTest {
     void a_stray_confirmation_says_it_was_dropped_and_never_that_it_was_recorded() {
         // no saga at all for this address: the confirmation lands nowhere
         RouterFixture fixture = router();
-        fixture.router.handle("memes-events", confirmation(UUID.randomUUID()));
+        fixture.router.handle(Source.participant("memes"), confirmation(UUID.randomUUID()));
         assertTrue(logged("dropping stray memes purge confirmation"),
                 "a dropped confirmation must say so: " + logged());
         assertFalse(logged("recorded memes purge confirmation"),
@@ -73,7 +74,7 @@ class ConfirmationLogTest {
         RouterFixture fixture = router().withRunningSagaFor(LEAVER);
         UUID closed = fixture.store.all().get(0).id;
         fixture.store.complete(LEAVER, java.time.Instant.parse("2026-07-11T12:00:00Z"));
-        fixture.router.handle("memes-events", confirmation(closed));
+        fixture.router.handle(Source.participant("memes"), confirmation(closed));
         assertTrue(logged("dropping stray memes purge confirmation"), logged().toString());
         assertFalse(logged("recorded memes purge confirmation"), logged().toString());
     }

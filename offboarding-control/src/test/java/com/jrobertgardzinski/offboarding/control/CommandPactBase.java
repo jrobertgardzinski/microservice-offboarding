@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.control;
 
+import com.jrobertgardzinski.offboarding.control.Destination;
+import com.jrobertgardzinski.offboarding.control.Source;
 import com.jrobertgardzinski.offboarding.entity.Opening;
 import java.util.List;
 import java.util.UUID;
@@ -17,14 +19,14 @@ public final class CommandPactBase {
     }
 
     public static String realPurgeCommand() {
-        return RouterFixture.router().router.handle(RouterFixture.FACTS_TOPIC,
+        return RouterFixture.router().router.handle(Source.SECURITY,
                         "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                                 + "\"email\":\"leaver@example.com\",\"version\":1}")
                 .get(0).payload();
     }
 
     public static String realPurgeCommandWithPolicy() {
-        return RouterFixture.router().router.handle(RouterFixture.FACTS_TOPIC,
+        return RouterFixture.router().router.handle(Source.SECURITY,
                         "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                                 + "\"email\":\"leaver@example.com\",\"initiatedBy\":\"ADMIN\","
                                 + "\"policy\":{\"memes\":\"KEEP_POPULAR_ANONYMIZED:5\",\"comments\":\"DELETE\"},"
@@ -41,7 +43,7 @@ public final class CommandPactBase {
      */
     public static String realEraseCommand() {
         RouterFixture fixture = RouterFixture.router();
-        fixture.router.handle(RouterFixture.FACTS_TOPIC,
+        fixture.router.handle(Source.SECURITY,
                 "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                         + "\"email\":\"leaver@example.com\",\"initiatedBy\":\"ADMIN\","
                         + "\"policy\":{\"memes\":\"KEEP_POPULAR_ANONYMIZED:100\","
@@ -49,7 +51,7 @@ public final class CommandPactBase {
                         + "\"version\":1}");
         List<EventsRouter.Outgoing> out = List.of();
         for (String topic : RouterFixture.PARTICIPANT_BY_TOPIC.keySet()) {
-            out = fixture.router.handle(topic, confirmation());
+            out = fixture.router.handle(Source.participant(RouterFixture.PARTICIPANT_BY_TOPIC.get(topic)), confirmation());
         }
         return onCommands(out);
     }
@@ -75,7 +77,7 @@ public final class CommandPactBase {
     /** The one event on the participants' topic — the commands and the verdict travel together. */
     private static String onCommands(List<EventsRouter.Outgoing> out) {
         return out.stream()
-                .filter(outgoing -> EventsRouter.COMMANDS_TOPIC.equals(outgoing.topic()))
+                .filter(outgoing -> Destination.PARTICIPANTS.equals(outgoing.destination()))
                 .findFirst().orElseThrow(() -> new IllegalStateException(
                         "the router produced no participant command: " + out))
                 .payload();

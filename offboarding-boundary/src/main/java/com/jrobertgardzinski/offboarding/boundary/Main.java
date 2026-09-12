@@ -194,7 +194,7 @@ public final class Main {
         // /metrics reads it back out. Swap it for Observations.<Observation>silent() and the service runs
         // unobserved rather than broken — which is the whole point of the port
         ExportedObservations observations = new ExportedObservations();
-        EventsRouter router = new EventsRouter(factsTopic, participantByTopic,
+        EventsRouter router = new EventsRouter(
                 new BeginOffboarding(store, participants),
                 new RecordConfirmation(store, participants),
                 new SweepOverdue(store, purgeTimeout, maxPurgeRetries, republishAfter, retention),
@@ -203,9 +203,8 @@ public final class Main {
         String bootstrap = System.getenv().getOrDefault("KAFKA_BOOTSTRAP_SERVERS", "").trim();
         KafkaLoop kafkaLoop = null;
         if (!bootstrap.isEmpty()) {
-            List<String> topics = new ArrayList<>(participantByTopic.keySet());
-            topics.add(factsTopic);
-            kafkaLoop = new KafkaLoop(router, store, topics, SWEEP_EVERY, observations);
+            kafkaLoop = new KafkaLoop(router, store,
+                    new SagaTopics(factsTopic, participantByTopic), SWEEP_EVERY, observations);
             kafkaLoop.start(bootstrap);
         }
         KafkaLoop loop = kafkaLoop;

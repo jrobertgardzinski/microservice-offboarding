@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.control;
 
+import com.jrobertgardzinski.offboarding.control.Destination;
+import com.jrobertgardzinski.offboarding.control.Source;
 import com.jrobertgardzinski.offboarding.entity.Opening;
 import au.com.dius.pact.provider.PactVerifyProvider;
 import au.com.dius.pact.provider.junit5.MessageTestTarget;
@@ -66,16 +68,16 @@ class SecurityOutcomePactProviderTest {
         RouterFixture fixture = RouterFixture.router();
         // the fact carries security's OWN saga id, exactly as its orchestrator writes it — the
         // verdict below echoes it back, so the example is the real payload, correlation and all
-        fixture.router.handle(RouterFixture.FACTS_TOPIC,
+        fixture.router.handle(Source.SECURITY,
                 "{\"id\":\"" + UUID.randomUUID() + "\",\"sagaId\":\"" + UUID.randomUUID() + "\","
                         + "\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                         + "\"email\":\"leaver@example.com\",\"version\":1}");
-        fixture.router.handle("memes-events", confirmation());
-        fixture.router.handle("comments-events", confirmation());
+        fixture.router.handle(Source.participant("memes"), confirmation());
+        fixture.router.handle(Source.participant("comments"), confirmation());
         // the completing confirmation emits the CLOSURE command first and the verdict second;
         // security's pact is about the verdict
-        return fixture.router.handle("usercollections-events", confirmation()).stream()
-                .filter(outgoing -> EventsRouter.OUTCOMES_TOPIC.equals(outgoing.topic()))
+        return fixture.router.handle(Source.participant("collections"), confirmation()).stream()
+                .filter(outgoing -> Destination.SECURITY.equals(outgoing.destination()))
                 .findFirst().orElseThrow().payload();
     }
 
@@ -91,7 +93,7 @@ class SecurityOutcomePactProviderTest {
                         java.util.Set.copyOf(RouterFixture.PARTICIPANT_BY_TOPIC.values())),
                 java.time.Instant.parse("2026-07-11T11:00:00Z"));
         return fixture.router.sweepOverdue().stream()
-                .filter(outgoing -> EventsRouter.OUTCOMES_TOPIC.equals(outgoing.topic()))
+                .filter(outgoing -> Destination.SECURITY.equals(outgoing.destination()))
                 .findFirst().orElseThrow().payload();
     }
 

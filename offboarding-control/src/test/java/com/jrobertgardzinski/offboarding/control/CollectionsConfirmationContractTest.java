@@ -1,5 +1,6 @@
 package com.jrobertgardzinski.offboarding.control;
 
+import com.jrobertgardzinski.offboarding.control.Source;
 import au.com.dius.pact.consumer.MessagePactBuilder;
 import au.com.dius.pact.consumer.dsl.PactDslJsonBody;
 import au.com.dius.pact.consumer.junit5.PactConsumerTestExt;
@@ -49,7 +50,7 @@ class CollectionsConfirmationContractTest {
         // echoed id matching no running saga is a stray by design)
         RouterFixture fixture = router()
                 .withRunningSaga(RouterFixture.sagaIdOf(payload), "leaver@example.com");
-        fixture.router.handle("usercollections-events", payload);
+        fixture.router.handle(Source.participant("collections"), payload);
         assertTrue(fixture.store.all().get(0).confirmed.contains("collections"),
                 "the collections confirmation must be recorded against the running saga");
     }

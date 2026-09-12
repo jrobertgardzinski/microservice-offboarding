@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.offboarding.control.appsteps;
 
+import com.jrobertgardzinski.offboarding.control.Destination;
+import com.jrobertgardzinski.offboarding.control.Source;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jrobertgardzinski.offboarding.control.BeginOffboarding;
@@ -52,8 +54,10 @@ public class OffboardingSteps {
     }
 
     private void withParticipants(Map<String, String> participantByTopic) {
+        // the map is still keyed by topic because the SCENARIOS name participants that way; the
+        // router never sees it — it hears a Source and answers a Destination
         Set<String> participants = Set.copyOf(participantByTopic.values());
-        router = new EventsRouter(FACTS_TOPIC, participantByTopic,
+        router = new EventsRouter(
                 new BeginOffboarding(store, participants),
                 new RecordConfirmation(store, participants),
                 new SweepOverdue(store, TIMEOUT),
@@ -88,7 +92,7 @@ public class OffboardingSteps {
     @Given("security announced that {word} requested deletion")
     @When("security announces that {word} requested deletion")
     public void deletionRequested(String email) {
-        announced.addAll(router.handle(FACTS_TOPIC,
+        announced.addAll(router.handle(Source.SECURITY,
                 "{\"id\":\"" + factId(email) + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                         + "\"email\":\"" + email + "\",\"version\":1}"));
     }
@@ -96,7 +100,7 @@ public class OffboardingSteps {
     @Given("security announced that {word} requested deletion choosing memes={word} and comments={word}")
     @When("security announces that {word} requested deletion choosing memes={word} and comments={word}")
     public void deletionRequestedWithPolicy(String email, String memesRule, String commentsRule) {
-        announced.addAll(router.handle(FACTS_TOPIC,
+        announced.addAll(router.handle(Source.SECURITY,
                 "{\"id\":\"" + factId(email) + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                         + "\"email\":\"" + email + "\","
                         + "\"policy\":{\"memes\":\"" + memesRule + "\",\"comments\":\"" + commentsRule + "\"},"
@@ -110,7 +114,7 @@ public class OffboardingSteps {
     @When("security announces another deletion request for {word}")
     public void anotherDeletionRequested(String email) {
         // a genuinely new fact — a fresh id, not a replay of the first announcement
-        announced.addAll(router.handle(FACTS_TOPIC,
+        announced.addAll(router.handle(Source.SECURITY,
                 "{\"id\":\"" + java.util.UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                         + "\"email\":\"" + email + "\",\"version\":1}"));
     }
@@ -122,14 +126,14 @@ public class OffboardingSteps {
 
     @When("security announces a deletion request that names no account")
     public void deletionRequestNamingNoAccount() {
-        announced.addAll(router.handle(FACTS_TOPIC,
+        announced.addAll(router.handle(Source.SECURITY,
                 "{\"id\":\"" + java.util.UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                         + "\"version\":1}"));
     }
 
     @When("security announces a deletion request with a garbled identity")
     public void deletionRequestWithGarbledIdentity() {
-        announced.addAll(router.handle(FACTS_TOPIC,
+        announced.addAll(router.handle(Source.SECURITY,
                 "{\"id\":\"not-a-uuid\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                         + "\"email\":\"mallory@example.com\",\"version\":1}"));
     }
@@ -137,7 +141,7 @@ public class OffboardingSteps {
     @Given("{word} confirmed its PURGE for {word}")
     @When("{word} confirms its PURGE for {word}")
     public void participantConfirms(String participant, String email) {
-        announced.addAll(router.handle(topicOf(participant),
+        announced.addAll(router.handle(Source.participant(participant),
                 "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + email + "\",\"version\":1}"));
     }
 
@@ -157,30 +161,22 @@ public class OffboardingSteps {
     }
 
     private void confirmEchoing(String participant, String email, String sagaId) {
-        announced.addAll(router.handle(topicOf(participant),
+        announced.addAll(router.handle(Source.participant(participant),
                 "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + email + "\","
                         + "\"sagaId\":\"" + sagaId + "\",\"version\":1}"));
     }
 
-    private static String topicOf(String participant) {
-        return switch (participant) {
-            case "memes" -> "memes-events";
-            case "comments" -> "comments-events";
-            case "collections" -> "usercollections-events";
-            default -> throw new IllegalArgumentException("unknown participant " + participant);
-        };
-    }
 
     /** The saga the (latest) purge command carried — what a fresh confirmation would echo. */
     private String commandedSagaId() {
-        List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC);
+        List<JsonNode> commands = allOn(Destination.PARTICIPANTS);
         assertFalse(commands.isEmpty(), "no purge command went out to echo");
         return commands.get(commands.size() - 1).path("sagaId").asText();
     }
 
     /** The saga the FIRST purge command carried — what a late echo of an old case would carry. */
     private String firstCommandedSagaId() {
-        List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC);
+        List<JsonNode> commands = allOn(Destination.PARTICIPANTS);
         assertFalse(commands.isEmpty(), "no purge command went out to echo");
         return commands.get(0).path("sagaId").asText();
     }
@@ -188,7 +184,7 @@ public class OffboardingSteps {
     @Given("the announcement reached security")
     public void announcementReachedSecurity() {
         List<EventsRouter.Outgoing> outcomes = announced.stream()
-                .filter(o -> o.topic().equals(EventsRouter.OUTCOMES_TOPIC)).toList();
+                .filter(o -> o.destination().equals(Destination.SECURITY)).toList();
         assertFalse(outcomes.isEmpty(), "there is no announcement to have reached security");
         outcomes.forEach(outcome -> store.markAnnounced(outcome.announcesSaga()));
         announced.removeAll(outcomes);   // delivered and consumed; the story moves on
@@ -197,7 +193,7 @@ public class OffboardingSteps {
     @Given("the announcement never left the portal")
     public void announcementNeverLeftThePortal() {
         // lost in transit before anyone could note it as announced — the saga keeps owing it
-        announced.removeIf(o -> o.topic().equals(EventsRouter.OUTCOMES_TOPIC));
+        announced.removeIf(o -> o.destination().equals(Destination.SECURITY));
     }
 
     @When("the PURGE deadline passes")
@@ -248,7 +244,7 @@ public class OffboardingSteps {
 
     @Then("a PURGE command for {word} goes out to the content services")
     public void purgeCommandWentOut(String email) {
-        JsonNode command = onlyOn(EventsRouter.COMMANDS_TOPIC);
+        JsonNode command = onlyOn(Destination.PARTICIPANTS);
         assertEquals("PURGE_USER_CONTENT", command.path("type").asText());
         assertEquals(email, command.path("email").asText());
         assertTrue(command.hasNonNull("sagaId"), "participants confirm by saga");
@@ -256,7 +252,7 @@ public class OffboardingSteps {
 
     @Then("the PURGE command carries the choices memes={word} and comments={word}")
     public void purgeCommandCarriesPolicy(String memesRule, String commentsRule) {
-        JsonNode policy = onlyOn(EventsRouter.COMMANDS_TOPIC).path("policy");
+        JsonNode policy = onlyOn(Destination.PARTICIPANTS).path("policy");
         assertEquals(memesRule, policy.path("memes").asText());
         assertEquals(commentsRule, policy.path("comments").asText());
     }
@@ -265,7 +261,7 @@ public class OffboardingSteps {
     public void everyPurgeCommandCarriesPolicy(String memesRule, String commentsRule) {
         // the retry must repeat the ORIGINAL command — the choices stored with the saga, not the
         // participants' defaults; every command on the wire carries them identically
-        List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC);
+        List<JsonNode> commands = allOn(Destination.PARTICIPANTS);
         assertFalse(commands.isEmpty(), "no purge command went out to carry the choices");
         for (JsonNode command : commands) {
             JsonNode policy = command.path("policy");
@@ -307,9 +303,9 @@ public class OffboardingSteps {
         // lets security delete the account; the compensation is what makes the apology true. Either
         // one announced first would mean the world learns the case is settled before it is.
         String type = "ERASURE".equals(which) ? EventsRouter.ERASE_COMMAND : EventsRouter.RESTORE_COMMAND;
-        int command = indexOfFirst(o -> o.topic().equals(EventsRouter.COMMANDS_TOPIC)
+        int command = indexOfFirst(o -> o.destination().equals(Destination.PARTICIPANTS)
                 && payloadOf(o).path("type").asText().equals(type));
-        int outcome = indexOfFirst(o -> o.topic().equals(EventsRouter.OUTCOMES_TOPIC));
+        int outcome = indexOfFirst(o -> o.destination().equals(Destination.SECURITY));
         assertTrue(command >= 0, "no " + type + " command went out at all: " + announced);
         assertTrue(outcome >= 0, "no outcome was announced at all: " + announced);
         assertTrue(command < outcome,
@@ -318,21 +314,21 @@ public class OffboardingSteps {
 
     @Then("the portal announces the content of {word} purged")
     public void portalPurgedAnnounced(String email) {
-        JsonNode outcome = onlyOn(EventsRouter.OUTCOMES_TOPIC);
+        JsonNode outcome = onlyOn(Destination.SECURITY);
         assertEquals("PORTAL_CONTENT_PURGED", outcome.path("type").asText());
         assertEquals(email, outcome.path("email").asText());
     }
 
     @Then("the portal announces the PURGE for {word} failed")
     public void purgeFailureAnnounced(String email) {
-        JsonNode outcome = onlyOn(EventsRouter.OUTCOMES_TOPIC);
+        JsonNode outcome = onlyOn(Destination.SECURITY);
         assertEquals("PORTAL_PURGE_FAILED", outcome.path("type").asText());
         assertEquals(email, outcome.path("email").asText());
     }
 
     @Then("the PURGE command for {word} is sent again")
     public void purgeCommandResent(String email) {
-        List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC);
+        List<JsonNode> commands = allOn(Destination.PARTICIPANTS);
         assertEquals(2, commands.size(), "the original command and exactly one re-send");
         for (JsonNode command : commands) {
             assertEquals("PURGE_USER_CONTENT", command.path("type").asText());
@@ -346,7 +342,7 @@ public class OffboardingSteps {
     public void freshPurgeCommandOpensANewCase(String email) {
         // the MARK commands only: the participants' topic also carries the closure that ended the
         // first case, which is a different message about the same address
-        List<JsonNode> commands = allOn(EventsRouter.COMMANDS_TOPIC).stream()
+        List<JsonNode> commands = allOn(Destination.PARTICIPANTS).stream()
                 .filter(command -> EventsRouter.MARK_COMMAND.equals(command.path("type").asText()))
                 .toList();
         assertEquals(2, commands.size(), "the command of the finished case and the fresh one");
@@ -359,7 +355,7 @@ public class OffboardingSteps {
 
     @Then("the portal never announces the content of {word} purged")
     public void portalPurgedNeverAnnounced(String email) {
-        for (JsonNode outcome : allOn(EventsRouter.OUTCOMES_TOPIC)) {
+        for (JsonNode outcome : allOn(Destination.SECURITY)) {
             assertFalse("PORTAL_CONTENT_PURGED".equals(outcome.path("type").asText())
                             && email.equals(outcome.path("email").asText()),
                     "a late confirmation may not rewrite the announced outcome: " + outcome);
@@ -368,7 +364,7 @@ public class OffboardingSteps {
 
     @Then("the failure names {word} among the participants that already purged")
     public void failureNamesThePartialPurge(String participant) {
-        JsonNode confirmed = onlyOn(EventsRouter.OUTCOMES_TOPIC).path("confirmed");
+        JsonNode confirmed = onlyOn(Destination.SECURITY).path("confirmed");
         boolean named = false;
         for (JsonNode name : confirmed) {
             named |= participant.equals(name.asText());
@@ -380,7 +376,7 @@ public class OffboardingSteps {
     @Then("no OUTCOME is announced again")
     public void nothingAnnounced() {
         List<EventsRouter.Outgoing> outcomes = announced.stream()
-                .filter(o -> o.topic().equals(EventsRouter.OUTCOMES_TOPIC)).toList();
+                .filter(o -> o.destination().equals(Destination.SECURITY)).toList();
         assertEquals(List.of(), outcomes, "no outcome may be announced yet");
     }
 
@@ -390,7 +386,7 @@ public class OffboardingSteps {
      * one message that ends the case, all keyed by the same address.
      */
     private JsonNode onlyCommandOfType(String type) {
-        List<JsonNode> matching = allOn(EventsRouter.COMMANDS_TOPIC).stream()
+        List<JsonNode> matching = allOn(Destination.PARTICIPANTS).stream()
                 .filter(command -> type.equals(command.path("type").asText()))
                 .toList();
         assertEquals(1, matching.size(),
@@ -415,15 +411,15 @@ public class OffboardingSteps {
         }
     }
 
-    private JsonNode onlyOn(String topic) {
-        List<JsonNode> matching = allOn(topic);
-        assertEquals(1, matching.size(), "expected exactly one event on " + topic + ", got " + announced);
+    private JsonNode onlyOn(Destination audience) {
+        List<JsonNode> matching = allOn(audience);
+        assertEquals(1, matching.size(), "expected exactly one event for " + audience + ", got " + announced);
         return matching.get(0);
     }
 
-    private List<JsonNode> allOn(String topic) {
+    private List<JsonNode> allOn(Destination audience) {
         return announced.stream()
-                .filter(o -> o.topic().equals(topic))
+                .filter(o -> o.destination() == audience)
                 .map(o -> {
                     try {
                         return mapper.readTree(o.payload());

@@ -4,6 +4,7 @@ import com.jrobertgardzinski.offboarding.control.EventsRouter;
 import com.jrobertgardzinski.offboarding.entity.Observation;
 import com.jrobertgardzinski.observation.Observations;
 import com.jrobertgardzinski.offboarding.control.SagaStore;
+import com.jrobertgardzinski.offboarding.control.Source;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -123,7 +124,7 @@ public class KafkaLoop {
 
     private final EventsRouter router;
     private final SagaStore store;
-    private final Collection<String> topics;
+    private final SagaTopics topics;
     /** The topic the readiness probe asks about: any subscribed one proves the same broker. */
     private final String probeTopic;
     private final Duration sweepEvery;
@@ -151,7 +152,7 @@ public class KafkaLoop {
     /** Where this loop STATES what it noticed; the adapter decides these are counters. */
     private final Observations<Observation> observations;
 
-    public KafkaLoop(EventsRouter router, SagaStore store, Collection<String> topics,
+    public KafkaLoop(EventsRouter router, SagaStore store, SagaTopics topics,
                      Duration sweepEvery, Observations<Observation> observations) {
         this(router, store, topics, sweepEvery, DELIVERY_TIMEOUT, REQUEST_TIMEOUT, MAX_BLOCK,
                 PROBE_TIMEOUT, observations);
@@ -162,15 +163,16 @@ public class KafkaLoop {
      * probe's patience so proving "the beat outlives the outage" (and "the silence stalls
      * readiness") takes seconds, not the production thirty per blocked send.
      */
-    KafkaLoop(EventsRouter router, SagaStore store, Collection<String> topics, Duration sweepEvery,
+    KafkaLoop(EventsRouter router, SagaStore store, SagaTopics topics, Duration sweepEvery,
               Duration deliveryTimeout, Duration requestTimeout, Duration maxBlock,
               Duration probeTimeout, Observations<Observation> observations) {
         this.observations = observations;
         this.router = router;
         this.store = store;
         this.topics = topics;
-        this.probeTopic = topics.stream().findFirst().orElseThrow(() -> new IllegalArgumentException(
-                "a KafkaLoop needs at least one topic to consume (and to probe the broker with)"));
+        this.probeTopic = topics.subscriptions().stream().findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "a KafkaLoop needs at least one topic to consume (and to probe with)"));
         this.sweepEvery = sweepEvery;
         this.deliveryTimeout = deliveryTimeout;
         this.requestTimeout = requestTimeout;
@@ -267,7 +269,7 @@ public class KafkaLoop {
         long nextProbeNanos = System.nanoTime();
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProps(bootstrapServers))) {
             this.consumer = consumer;
-            consumer.subscribe(topics);
+            consumer.subscribe(topics.subscriptions());
             while (running && !Thread.currentThread().isInterrupted()) {
                 // the liveness heartbeat: every iteration, including one about to fail or back
                 // off — /alive watches scheduling, not success (success is /health's business)
@@ -293,7 +295,15 @@ public class KafkaLoop {
                             MDC.put("cid", cid);   // continue the trace the deletion request started
                         }
                         try {
-                            for (EventsRouter.Outgoing outgoing : router.handle(record.topic(), record.value())) {
+                            Source sender = topics.senderOf(record.topic());
+                            if (sender == null) {
+                                // subscribed to a topic this deployment never mapped: a
+                                // misconfiguration, and dropping it beats wedging the partition
+                                LOG.warn("a record arrived on {}, which no participant claims;"
+                                        + " dropping it", record.topic());
+                                continue;
+                            }
+                            for (EventsRouter.Outgoing outgoing : router.handle(sender, record.value())) {
                                 sent.add(new Sent(outgoing, send(producer, outgoing, cid)));
                             }
                         } finally {
@@ -534,10 +544,10 @@ public class KafkaLoop {
         }
     }
 
-    private static Future<RecordMetadata> send(KafkaProducer<String, String> producer,
-                                               EventsRouter.Outgoing outgoing, String cid) {
-        ProducerRecord<String, String> out =
-                new ProducerRecord<>(outgoing.topic(), outgoing.key(), outgoing.payload());
+    private Future<RecordMetadata> send(KafkaProducer<String, String> producer,
+                                        EventsRouter.Outgoing outgoing, String cid) {
+        ProducerRecord<String, String> out = new ProducerRecord<>(
+                topics.topicFor(outgoing.destination()), outgoing.key(), outgoing.payload());
         if (cid != null) {
             out.headers().add(CID_HEADER, cid.getBytes(StandardCharsets.UTF_8));
         }

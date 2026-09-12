@@ -1,5 +1,6 @@
 package com.jrobertgardzinski.offboarding.control;
 
+import com.jrobertgardzinski.offboarding.control.Source;
 import com.jrobertgardzinski.offboarding.entity.SweepResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -37,7 +38,7 @@ class EventsRouterPolicyCapTest {
         String fact = "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
                 + "\"email\":\"alice@example.com\",\"version\":1,\"policy\":{\"note\":\"" + blob + "\"}}";
 
-        List<EventsRouter.Outgoing> out = fixture.router.handle(RouterFixture.FACTS_TOPIC, fact);
+        List<EventsRouter.Outgoing> out = fixture.router.handle(Source.SECURITY, fact);
 
         assertEquals(1, out.size(), "the saga must still open — the cap drops the baggage,"
                 + " never the deletion");
@@ -61,7 +62,7 @@ class EventsRouterPolicyCapTest {
                 + "\"email\":\"alice@example.com\",\"version\":1,"
                 + "\"policy\":{\"memes\":\"DELETE_ALL\"}}";
 
-        List<EventsRouter.Outgoing> out = fixture.router.handle(RouterFixture.FACTS_TOPIC, fact);
+        List<EventsRouter.Outgoing> out = fixture.router.handle(Source.SECURITY, fact);
 
         JsonNode command = MAPPER.readTree(out.getFirst().payload());
         assertEquals("DELETE_ALL", command.path("policy").path("memes").asText(),
@@ -84,7 +85,7 @@ class EventsRouterPolicyCapTest {
                 + "\"email\":\"alice@example.com\",\"version\":1,\"policy\":{\"note\":\""
                 + multiByte + "\"}}";
 
-        List<EventsRouter.Outgoing> out = fixture.router.handle(RouterFixture.FACTS_TOPIC, fact);
+        List<EventsRouter.Outgoing> out = fixture.router.handle(Source.SECURITY, fact);
 
         assertEquals(1, out.size());
         assertFalse(MAPPER.readTree(out.getFirst().payload()).has("policy"),

@@ -1,5 +1,6 @@
 package com.jrobertgardzinski.offboarding.control;
 
+import com.jrobertgardzinski.offboarding.control.Source;
 import io.qameta.allure.Epic;
 import io.qameta.allure.Feature;
 import org.junit.jupiter.api.DisplayName;
@@ -55,7 +56,7 @@ class SharedTopicCascadeTrafficTest {
         RouterFixture fixture = router().withRunningSagaFor(LEAVER);
 
         List<EventsRouter.Outgoing> out =
-                fixture.router.handle("comments-events", commentsDeleted(UUID.randomUUID().toString()));
+                fixture.router.handle(Source.participant("comments"), commentsDeleted(UUID.randomUUID().toString()));
 
         assertEquals(List.of(), out, "the cascade's announcement is not addressed to the saga");
         InMemorySagaStore.Saga saga = fixture.store.all().get(0);
@@ -71,7 +72,7 @@ class SharedTopicCascadeTrafficTest {
         RouterFixture fixture = router().withRunningSagaFor(LEAVER);
 
         List<EventsRouter.Outgoing> out =
-                fixture.router.handle("memes-events", memeDeleted(UUID.randomUUID().toString()));
+                fixture.router.handle(Source.participant("memes"), memeDeleted(UUID.randomUUID().toString()));
 
         assertEquals(List.of(), out);
         assertTrue(fixture.store.all().get(0).confirmed.isEmpty());
@@ -84,13 +85,13 @@ class SharedTopicCascadeTrafficTest {
         RouterFixture fixture = router().withRunningSagaFor(LEAVER);
         UUID sagaId = fixture.store.all().get(0).id;
         // the genuine article from ONE participant; two are still owed
-        fixture.router.handle("memes-events", confirmation(sagaId));
+        fixture.router.handle(Source.participant("memes"), confirmation(sagaId));
 
         // ...and then the cascade's traffic on both of the topics the missing confirmations
         // would arrive on. If any of it counted, the saga would close two participants short
         String memeId = UUID.randomUUID().toString();
-        fixture.router.handle("memes-events", memeDeleted(memeId));
-        List<EventsRouter.Outgoing> out = fixture.router.handle("comments-events", commentsDeleted(memeId));
+        fixture.router.handle(Source.participant("memes"), memeDeleted(memeId));
+        List<EventsRouter.Outgoing> out = fixture.router.handle(Source.participant("comments"), commentsDeleted(memeId));
 
         assertEquals(List.of(), out, "no outcome may be announced while two participants are owed");
         assertEquals(java.util.Set.of("memes"), fixture.store.all().get(0).confirmed,
@@ -106,8 +107,8 @@ class SharedTopicCascadeTrafficTest {
 
         // interleaved exactly as the broker would deliver it: a meme deleted, its thread dropped,
         // and only then the confirmation of the account purge that has nothing to do with either
-        fixture.router.handle("comments-events", commentsDeleted(UUID.randomUUID().toString()));
-        fixture.router.handle("comments-events", confirmation(sagaId));
+        fixture.router.handle(Source.participant("comments"), commentsDeleted(UUID.randomUUID().toString()));
+        fixture.router.handle(Source.participant("comments"), confirmation(sagaId));
 
         assertTrue(fixture.store.all().get(0).confirmed.contains("comments"),
                 "the confirmation behind the cascade traffic must still be recorded");
