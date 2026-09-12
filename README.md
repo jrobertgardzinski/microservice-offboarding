@@ -77,9 +77,17 @@ mvn package && java -jar target/microservice-offboarding.jar
 ```
 
 Env: `OFFBOARDING_PORT` (8094), `OFFBOARDING_FACTS_TOPIC` (security-events),
-`OFFBOARDING_PARTICIPANTS` (see above), `OFFBOARDING_PURGE_TIMEOUT_SEC` (120),
-`KAFKA_BOOTSTRAP_SERVERS` (absent = the loop never runs), `DB_URL`/`DB_USER`/`DB_PASSWORD`
-(absent = in-memory H2).
+`OFFBOARDING_PARTICIPANTS` (see above), `OFFBOARDING_ALIVE_STALL_SEC` (240, pinned beside the
+liveness thresholds it is derived from), `KAFKA_BOOTSTRAP_SERVERS` (absent = the loop never runs),
+`DB_URL`/`DB_USER`/`DB_PASSWORD` (absent = in-memory H2).
+
+**The saga's clocks are not among them, deliberately.** The purge timeout, the retry count, the
+outcome-republish window, the retention and the two stall tolerances used to be environment
+variables with ranges and a boot-time refusal, and no deployment in the estate ever set one. The
+first two may not be dials at all: they are half of a contract with security (its safety net must
+outlast `timeout x (retries + 1)`, see `SagaTimingContractTest`), and a number you cannot change
+without re-deriving somebody else's is not configuration. Changing any of them means a new image,
+which this service is built to survive — see the section below.
 
 ## Documentation
 

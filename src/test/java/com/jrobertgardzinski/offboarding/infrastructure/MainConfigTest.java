@@ -25,13 +25,13 @@ class MainConfigTest {
 
     @Test
     void an_absent_or_blank_numeric_env_falls_back_to_the_default() {
-        assertEquals(120, Main.parseLongOrRefuse("OFFBOARDING_PURGE_TIMEOUT_SEC", null, 120));
-        assertEquals(120, Main.parseLongOrRefuse("OFFBOARDING_PURGE_TIMEOUT_SEC", "  ", 120));
+        assertEquals(8094, Main.parseLongOrRefuse("OFFBOARDING_PORT", null, 8094));
+        assertEquals(8094, Main.parseLongOrRefuse("OFFBOARDING_PORT", "  ", 8094));
     }
 
     @Test
     void a_parsable_numeric_env_wins_over_the_default() {
-        assertEquals(45, Main.parseLongOrRefuse("OFFBOARDING_CONSUMER_STALL_SEC", " 45 ", 60));
+        assertEquals(9000, Main.parseLongOrRefuse("OFFBOARDING_PORT", " 9000 ", 8094));
     }
 
     @Test
@@ -47,7 +47,7 @@ class MainConfigTest {
     @Test
     void a_value_inside_its_range_passes_through() {
         assertEquals(8094, Main.inRangeOrRefuse("OFFBOARDING_PORT", 8094, 1, 65535));
-        assertEquals(0, Main.inRangeOrRefuse("OFFBOARDING_MAX_PURGE_RETRIES", 0, 0, 100));
+        assertEquals(1, Main.inRangeOrRefuse("OFFBOARDING_PORT", 1, 1, 65535));
     }
 
     @Test
@@ -64,37 +64,30 @@ class MainConfigTest {
         }
     }
 
-    @Test
-    void a_retry_budget_outside_0_to_100_refuses_to_boot() {
-        assertThrows(IllegalArgumentException.class,
-                () -> Main.inRangeOrRefuse("OFFBOARDING_MAX_PURGE_RETRIES", -1, 0, 100));
-        assertThrows(IllegalArgumentException.class,
-                () -> Main.inRangeOrRefuse("OFFBOARDING_MAX_PURGE_RETRIES", 101, 0, 100));
-    }
 
     @Test
-    void a_non_positive_timeout_refuses_to_boot_without_reciting_long_max() {
-        // an unbounded maximum must read "at least 1", not "between 1 and 9223372036854775807"
+    void an_unbounded_maximum_reads_readably_instead_of_reciting_long_max() {
+        // "at least 1", never "between 1 and 9223372036854775807"
         IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                () -> Main.inRangeOrRefuse("OFFBOARDING_PURGE_TIMEOUT_SEC", 0, 1, Long.MAX_VALUE));
-        assertTrue(refusal.getMessage().contains("OFFBOARDING_PURGE_TIMEOUT_SEC"));
+                () -> Main.inRangeOrRefuse("OFFBOARDING_PORT", 0, 1, Long.MAX_VALUE));
+        assertTrue(refusal.getMessage().contains("OFFBOARDING_PORT"));
         assertTrue(refusal.getMessage().contains("at least 1"),
                 "the refusal must state the floor readably: " + refusal.getMessage());
     }
 
     @Test
     void a_stall_below_the_sweep_interval_is_floored_to_the_interval() {
-        assertEquals(Main.SWEEP_EVERY, Main.flooredStall("OFFBOARDING_SWEEPER_STALL_SEC",
+        assertEquals(Main.SWEEP_EVERY, Main.flooredStall("the sweeper stall tolerance",
                 Duration.ofSeconds(1), Main.SWEEP_EVERY));
-        assertEquals(Main.SWEEP_EVERY, Main.flooredStall("OFFBOARDING_ALIVE_STALL_SEC",
+        assertEquals(Main.SWEEP_EVERY, Main.flooredStall("the /alive stall tolerance",
                 Duration.ofSeconds(1), Main.SWEEP_EVERY));
     }
 
     @Test
     void a_stall_at_or_above_the_interval_is_kept() {
-        assertEquals(Duration.ofSeconds(60), Main.flooredStall("OFFBOARDING_SWEEPER_STALL_SEC",
+        assertEquals(Duration.ofSeconds(60), Main.flooredStall("the sweeper stall tolerance",
                 Duration.ofSeconds(60), Main.SWEEP_EVERY));
-        assertEquals(Main.SWEEP_EVERY, Main.flooredStall("OFFBOARDING_SWEEPER_STALL_SEC",
+        assertEquals(Main.SWEEP_EVERY, Main.flooredStall("the sweeper stall tolerance",
                 Main.SWEEP_EVERY, Main.SWEEP_EVERY));
     }
 
@@ -138,7 +131,8 @@ class MainConfigTest {
     void the_code_default_sits_above_the_floor_instead_of_being_corrected_by_it() {
         // a default the floor silently raises is not a default: the javadoc, the k8s manifests
         // and the operator would all be quoting a number the service never uses. 120s stopped
-        // being one the moment the floor was computed honestly (183s)
+        // being one the moment the floor was computed honestly (183s). This is the one numeric
+        // variable the service still reads, and the k8s manifest pins it to exactly this default
         assertTrue(Main.DEFAULT_ALIVE_STALL.compareTo(Main.ALIVE_STALL_FLOOR) >= 0,
                 "OFFBOARDING_ALIVE_STALL_SEC's default (" + Main.DEFAULT_ALIVE_STALL.toSeconds()
                         + "s) must not be below the floor (" + Main.ALIVE_STALL_FLOOR.toSeconds()

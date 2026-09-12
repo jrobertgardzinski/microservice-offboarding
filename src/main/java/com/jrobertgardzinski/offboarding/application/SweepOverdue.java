@@ -23,6 +23,26 @@ import java.util.List;
 public class SweepOverdue {
 
     /** The house defaults; production overrides ride the environment (see Main). */
+    /**
+     * How long a participant may stay silent after it was ASKED — measured from the last command
+     * it actually received, never from the saga's birth.
+     *
+     * <p>This number and {@link #DEFAULT_MAX_RETRIES} are HALF OF A CONTRACT WITH SECURITY, which
+     * is why they live together and why {@link #worstCaseDecision()} exists: the whole case takes
+     * at most timeout x (retries + 1), and security's own safety net must stay ABOVE that, or the
+     * account comes back before its content is gone. That is not hypothetical — measured on the
+     * live stack on 2026-08-08, security gave up at ~5 minutes while the portal was still working
+     * and finished at ~8. Nobody decided that; it was the sum of two timeouts nobody read together.
+     *
+     * <p>Neither is settable from the environment, deliberately. A value that may not be tuned
+     * without re-deriving somebody else's is not configuration: exposing it as a dial invites
+     * exactly the drift above, and a knob nothing sets is machinery guarding a door nobody opens.
+     * Changing it means a new image, which this service is built to survive — stateless, saga
+     * state in Postgres, idempotent, offsets at the broker, so a redeploy delays deletions rather
+     * than losing them.
+     */
+    public static final Duration DEFAULT_PURGE_TIMEOUT = Duration.ofSeconds(120);
+
     public static final int DEFAULT_MAX_RETRIES = 3;
     public static final Duration DEFAULT_REPUBLISH_AFTER = Duration.ofSeconds(30);
     public static final Duration DEFAULT_RETENTION = Duration.ofDays(30);
@@ -38,6 +58,14 @@ public class SweepOverdue {
     private final int maxRetries;
     private final Duration republishAfter;
     private final Duration retention;
+
+    /**
+     * The longest a case can take before the failure is announced: every command gets the full
+     * timeout, and there are retries + 1 of them. The number security must outlast.
+     */
+    public static Duration worstCaseDecision() {
+        return DEFAULT_PURGE_TIMEOUT.multipliedBy(DEFAULT_MAX_RETRIES + 1L);
+    }
 
     public SweepOverdue(SagaStore sagas, Duration purgeTimeout) {
         this(sagas, purgeTimeout, DEFAULT_MAX_RETRIES, DEFAULT_REPUBLISH_AFTER, DEFAULT_RETENTION);

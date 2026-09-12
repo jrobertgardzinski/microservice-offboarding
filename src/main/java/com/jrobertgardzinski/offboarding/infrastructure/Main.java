@@ -28,8 +28,8 @@ import java.util.Map;
  * {@code KAFKA_BOOTSTRAP_SERVERS} the loop simply never runs (dev, tests) — and then the probes
  * have no loops to distrust. With Kafka the two probes split readiness from liveness:
  * {@code /health} (READINESS) turns 503 once either loop stops COMPLETING passes for longer than
- * its stall tolerance ({@code OFFBOARDING_CONSUMER_STALL_SEC} /
- * {@code OFFBOARDING_SWEEPER_STALL_SEC}) — a broker outage does that, and restarting would not
+ * its stall tolerance ({@link #DEFAULT_CONSUMER_STALL} / {@link #DEFAULT_SWEEPER_STALL}) — a
+ * broker outage does that, and restarting would not
  * fix the broker, so compose healthchecks and {@code depends_on} gate on it while dependants
  * wait. {@code /alive} (LIVENESS) turns 503 only when a loop thread died or stopped being
  * scheduled for longer than {@code OFFBOARDING_ALIVE_STALL_SEC} (default 240s; floored at
@@ -121,6 +121,12 @@ public final class Main {
      *  javadoc, the manifests and the operator's head at once. */
     static final Duration DEFAULT_ALIVE_STALL = Duration.ofSeconds(240);
 
+    /** How long the consumer loop may go without completing a cycle before /health says so. */
+    static final Duration DEFAULT_CONSUMER_STALL = Duration.ofSeconds(60);
+
+    /** The same for the sweeper; floored at {@link #SWEEP_EVERY}, which is as often as it stamps. */
+    static final Duration DEFAULT_SWEEPER_STALL = Duration.ofSeconds(60);
+
     private static Duration max(Duration a, Duration b) {
         return a.compareTo(b) >= 0 ? a : b;
     }
@@ -145,24 +151,23 @@ public final class Main {
         String factsTopic = System.getenv().getOrDefault("OFFBOARDING_FACTS_TOPIC", "security-events");
         Map<String, String> participantByTopic = parseParticipants(
                 System.getenv().getOrDefault(PARTICIPANTS_ENV, DEFAULT_PARTICIPANTS));
-        // how long a participant may stay silent after it was ASKED — measured from the last
-        // command it actually received (the first one, or the last delivered re-command), not from
-        // the saga's birth. So the WHOLE case can take purgeTimeout x (retries + 1) before the
-        // failure is announced: 120s x 4 = 8 minutes with the defaults. That is deliberate: the
-        // participants' own retry budget is 90s per command, and announcing the failure before it
-        // expires would let the purge run AFTER the account was restored and apologised for
-        Duration purgeTimeout = Duration.ofSeconds(
-                longEnv("OFFBOARDING_PURGE_TIMEOUT_SEC", 120, 1, Long.MAX_VALUE));
-        int maxPurgeRetries = (int) longEnv("OFFBOARDING_MAX_PURGE_RETRIES",
-                SweepOverdue.DEFAULT_MAX_RETRIES, 0, 100);
-        Duration republishAfter = Duration.ofSeconds(longEnv("OFFBOARDING_OUTCOME_REPUBLISH_SEC",
-                SweepOverdue.DEFAULT_REPUBLISH_AFTER.toSeconds(), 1, Long.MAX_VALUE));
-        Duration retention = Duration.ofDays(longEnv("OFFBOARDING_RETENTION_DAYS",
-                SweepOverdue.DEFAULT_RETENTION.toDays(), 1, Long.MAX_VALUE));
-        Duration consumerStall = Duration.ofSeconds(
-                longEnv("OFFBOARDING_CONSUMER_STALL_SEC", 60, 1, Long.MAX_VALUE));
-        Duration sweeperStall = flooredStall("OFFBOARDING_SWEEPER_STALL_SEC",
-                Duration.ofSeconds(longEnv("OFFBOARDING_SWEEPER_STALL_SEC", 60, 1, Long.MAX_VALUE)),
+        // The saga's clocks are CONSTANTS, not environment. Six of these used to be env vars
+        // with ranges and a boot-time refusal, and in the whole estate — compose, k8s, e2e, the
+        // smoke script — not one deployment ever set a single one of them. That is the expensive
+        // half of a configuration level: the machinery is real, the door is one nobody opens.
+        //
+        // The timeout and the retry count are the ones that must NOT be a dial anyway: they are
+        // half of a contract with security (see SweepOverdue#worstCaseDecision), and a number you
+        // cannot change without re-deriving somebody else's is not configuration. What stays in
+        // the environment is topology — the port, the topics, who participates — plus the one
+        // number below that a manifest actually pins, because those genuinely differ between one
+        // deployment and the next.
+        Duration purgeTimeout = SweepOverdue.DEFAULT_PURGE_TIMEOUT;
+        int maxPurgeRetries = SweepOverdue.DEFAULT_MAX_RETRIES;
+        Duration republishAfter = SweepOverdue.DEFAULT_REPUBLISH_AFTER;
+        Duration retention = SweepOverdue.DEFAULT_RETENTION;
+        Duration consumerStall = DEFAULT_CONSUMER_STALL;
+        Duration sweeperStall = flooredStall("the sweeper stall tolerance", DEFAULT_SWEEPER_STALL,
                 SWEEP_EVERY);
         // 240s default: it has to sit ABOVE ALIVE_STALL_FLOOR, and the floor is now the honest
         // SUM of one iteration's blocks (rewind lookup 20s + probe 5s + poll 1s + database 40s +
@@ -170,6 +175,10 @@ public final class Main {
         // 2 x max(...) shape that used to under-count it at 100s. The old 120s default was BELOW
         // that honest floor, so every boot would have been silently floored — a default that
         // needs correcting is not a default
+        // the ONE numeric dial that survives, because a deployment genuinely turns it: the k8s
+        // manifest pins it beside the liveness probe's thresholds, which are derived from it, and
+        // an operator who edits one must be able to edit the other. A knob that looks live and is
+        // dead would be worse than no knob at all
         Duration aliveStall = flooredAliveStall("OFFBOARDING_ALIVE_STALL_SEC",
                 Duration.ofSeconds(longEnv("OFFBOARDING_ALIVE_STALL_SEC",
                         DEFAULT_ALIVE_STALL.toSeconds(), 1, Long.MAX_VALUE)));
@@ -279,12 +288,16 @@ public final class Main {
      * whole interval between stamps), so a stall tolerance below the interval would report a
      * perfectly healthy loop as stalled on every check. Floor it — loudly, through the logger,
      * where the service's own WARNs live (System.err bypasses the log shipping).
+     *
+     * <p>{@code name} is what the message calls the value: still an environment variable for the
+     * /alive tolerance, prose for the stall constants. Telling an operator to fix a variable this
+     * service no longer reads would be worse than saying nothing.
      */
     static Duration flooredStall(String name, Duration configured, Duration sweepEvery) {
         if (configured.compareTo(sweepEvery) >= 0) {
             return configured;
         }
-        LOG.warn("{}={} is below the sweep interval of {}s — the sweeper can only stamp its"
+        LOG.warn("{} of {}s is below the sweep interval of {}s — the sweeper can only stamp its"
                         + " marker once per interval, so the probe would call a healthy loop"
                         + " stalled; using {}s instead", name, configured.toSeconds(),
                 sweepEvery.toSeconds(), sweepEvery.toSeconds());
@@ -304,7 +317,7 @@ public final class Main {
         if (configured.compareTo(ALIVE_STALL_FLOOR) >= 0) {
             return configured;
         }
-        LOG.warn("{}={}s is below the {}s floor, the SUM of one iteration's blocks (rewind"
+        LOG.warn("{} of {}s is below the {}s floor, the SUM of one iteration's blocks (rewind"
                         + " lookup {}s + broker probe {}s + poll {}s + database {}s + flush {}s"
                         + " + commit {}s + max backoff {}s = {}s for the consumer, {}s for the"
                         + " sweeper, plus {}% margin) — an outage legitimately holds an iteration"

@@ -217,7 +217,7 @@ public class KafkaLoop {
      * <p>The cadence is therefore PART of the detection time, and the configured stall tolerance
      * is not the whole promise: a broker that dies the instant AFTER a successful probe leaves
      * the marker moving for up to one {@link #PROBE_EVERY} (10s) before the next probe even asks,
-     * plus its {@link #PROBE_TIMEOUT} (5s) — so a 60s {@code OFFBOARDING_CONSUMER_STALL_SEC}
+     * plus its {@link #PROBE_TIMEOUT} (5s) — so the 60s consumer stall tolerance
      * really means "noticed within about 75s", not "within 60s". Read the env as the tolerance it
      * is, not as a detection deadline.
      */

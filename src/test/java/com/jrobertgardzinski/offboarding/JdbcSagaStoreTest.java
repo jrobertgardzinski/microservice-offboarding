@@ -44,7 +44,7 @@ class JdbcSagaStoreTest {
     private static final Instant T0 = Instant.parse("2026-07-11T12:00:00Z");
     /** maxRetries=0: compensate on the first overdue sweep, the pre-retry behaviour. */
     private static final int NO_RETRIES = 0;
-    /** The deployed purge timeout (OFFBOARDING_PURGE_TIMEOUT_SEC, 120s) — the sweep's window. */
+    /** The purge timeout (SweepOverdue.DEFAULT_PURGE_TIMEOUT, 120s) — the sweep's window. */
     private static final long TIMEOUT = 120;
 
     private final DataSource dataSource = Database.migratedDataSource();
