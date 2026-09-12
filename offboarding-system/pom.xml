@@ -31,6 +31,14 @@
             <artifactId>observation</artifactId>
             <version>1.0.0-SNAPSHOT</version>
         </dependency>
+        <!-- the words this saga shares with identity and with every participant: the message names
+             and who asked for the closure. They were a final class of constants here, an enum in
+             identity and a private String in each content service. -->
+        <dependency>
+            <groupId>com.jrobertgardzinski</groupId>
+            <artifactId>account-closure</artifactId>
+            <version>1.0.0-SNAPSHOT</version>
+        </dependency>
     </dependencies>
 
     <build>

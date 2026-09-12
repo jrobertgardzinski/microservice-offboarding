@@ -1,6 +1,7 @@
 package com.jrobertgardzinski.offboarding.application;
 
-import com.jrobertgardzinski.offboarding.domain.RequestedBy;
+import com.jrobertgardzinski.closure.ClosureInitiator;
+import com.jrobertgardzinski.closure.ClosureMessages;
 import java.util.stream.Stream;
 import com.jrobertgardzinski.util.constraint.Outcome;
 import com.jrobertgardzinski.envelope.Masked;
@@ -70,9 +71,11 @@ public class EventsRouter {
      * ones that confirmed — a participant may have marked and had its confirmation lost, and
      * restoring what was never marked is a no-op by construction.
      */
-    public static final String MARK_COMMAND = "PURGE_USER_CONTENT";
-    public static final String ERASE_COMMAND = "ERASE_USER_CONTENT";
-    public static final String RESTORE_COMMAND = "RESTORE_USER_CONTENT";
+    // the names themselves live in account-closure, where identity and the participants read the
+    // same ones; these stay as this router's own vocabulary so the code below still reads as a saga
+    public static final String MARK_COMMAND = ClosureMessages.PURGE_USER_CONTENT;
+    public static final String ERASE_COMMAND = ClosureMessages.ERASE_USER_CONTENT;
+    public static final String RESTORE_COMMAND = ClosureMessages.RESTORE_USER_CONTENT;
 
     /**
      * The cap on the leaver's policy object, serialised (UTF-8 bytes): this service only FERRIES
@@ -173,9 +176,9 @@ public class EventsRouter {
         Envelope envelope = read.findValue().orElseThrow();
         String type = envelope.type();
         return switch (source) {
-            case Source.Security ignored when "ACCOUNT_DELETION_REQUESTED".equals(type) ->
+            case Source.Security ignored when ClosureMessages.ACCOUNT_DELETION_REQUESTED.equals(type) ->
                     onDeletionRequested(envelope);
-            case Source.Participant participant when "USER_CONTENT_PURGED".equals(type) ->
+            case Source.Participant participant when ClosureMessages.USER_CONTENT_PURGED.equals(type) ->
                     onConfirmation(envelope, participant.name());
             // the other lifecycle events of whoever sent this share the same road; not ours
             default -> List.of();
@@ -214,7 +217,7 @@ public class EventsRouter {
             // has anything to decide here (the payload states SELF, the safe reading of null)
             out.add(participantCommand(RESTORE_COMMAND, failed.sagaId(), failed.email(), null,
                     null));
-            out.add(outcome("PORTAL_PURGE_FAILED", failed.email(), failed.sagaId(),
+            out.add(outcome(ClosureMessages.PORTAL_PURGE_FAILED, failed.email(), failed.sagaId(),
                     failed.securitySagaId(), failed.confirmed()));
         }
         if (!swept.compensated().isEmpty()) {
@@ -234,9 +237,9 @@ public class EventsRouter {
                     pending.sagaId(), pending.email(), completed ? pending.policy() : null,
                     pending.initiatedBy()));
             out.add(completed
-                    ? outcome("PORTAL_CONTENT_PURGED", pending.email(), pending.sagaId(),
+                    ? outcome(ClosureMessages.PORTAL_CONTENT_PURGED, pending.email(), pending.sagaId(),
                     pending.securitySagaId(), null)
-                    : outcome("PORTAL_PURGE_FAILED", pending.email(), pending.sagaId(),
+                    : outcome(ClosureMessages.PORTAL_PURGE_FAILED, pending.email(), pending.sagaId(),
                     pending.securitySagaId(), pending.confirmed()));
         }
         return out;
@@ -277,7 +280,7 @@ public class EventsRouter {
         // who asked, normalised: anything that is not exactly ADMIN is the account's own owner,
         // which is also the honest reading of a fact from before the field existed — until then
         // security had one deletion route and only the owner could walk it
-        String initiatedBy = RequestedBy.normalised(fact.node().path("initiatedBy").asText());
+        String initiatedBy = ClosureInitiator.of(fact.node().path(ClosureMessages.Field.INITIATED_BY).asText()).wire();
         JsonNode policy = readPolicy.findValue().orElseThrow().orElse(null);
         String storedPolicy = policy == null ? null : write(policy);
         BeginOffboarding.Begun begun = begin.execute(factId, email, storedPolicy, securitySagaId,
@@ -293,7 +296,7 @@ public class EventsRouter {
                 return List.of();
             }
             LOG.info("no content participants configured; portal instantly clean for {}", Masked.address(email));
-            return List.of(outcome("PORTAL_CONTENT_PURGED", email, begun.sagaId(),
+            return List.of(outcome(ClosureMessages.PORTAL_CONTENT_PURGED, email, begun.sagaId(),
                     securitySagaId, null));
         }
         LOG.info("commanding the content purge for {} (saga {}, requested by {})", Masked.address(email),
@@ -350,7 +353,7 @@ public class EventsRouter {
         return List.of(
                 participantCommand(ERASE_COMMAND, landed.get().sagaId(), email,
                         landed.get().policy(), landed.get().initiatedBy()),
-                outcome("PORTAL_CONTENT_PURGED", email, landed.get().sagaId(),
+                outcome(ClosureMessages.PORTAL_CONTENT_PURGED, email, landed.get().sagaId(),
                         landed.get().securitySagaId(), null));
     }
 
@@ -419,7 +422,8 @@ public class EventsRouter {
                 // one envelope, so a participant routes them from a single listener and an
                 // operator reading the topic sees one conversation. Null for a saga opened before
                 // the column existed, which the participants read exactly as SELF
-                .put("initiatedBy", initiatedBy == null ? RequestedBy.SELF : initiatedBy)
+                .put(ClosureMessages.Field.INITIATED_BY,
+                        initiatedBy == null ? ClosureInitiator.SELF.wire() : initiatedBy)
                 // envelope version (workspace ADR 0004): fields only ever added within version 1
                 .put("version", 1);
         if (policy != null && policy.isObject()) {

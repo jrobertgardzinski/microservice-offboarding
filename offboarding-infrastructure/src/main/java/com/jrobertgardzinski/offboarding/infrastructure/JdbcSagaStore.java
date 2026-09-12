@@ -1,6 +1,6 @@
 package com.jrobertgardzinski.offboarding.infrastructure;
 
-import com.jrobertgardzinski.offboarding.domain.RequestedBy;
+import com.jrobertgardzinski.closure.ClosureInitiator;
 import com.jrobertgardzinski.offboarding.application.EventsRouter;
 import com.jrobertgardzinski.offboarding.domain.Compensated;
 import com.jrobertgardzinski.offboarding.domain.Opening;
@@ -406,14 +406,17 @@ public class JdbcSagaStore implements SagaStore {
      */
     private static void adoptSelfRequest(Connection connection, Target running, String initiatedBy)
             throws SQLException {
-        if (!RequestedBy.SELF.equals(initiatedBy)
-                || !RequestedBy.ADMIN.equals(running.initiatedBy())) {
+        // read through ClosureInitiator rather than compared as strings: an unrecognised word on
+        // either side reads as SELF, which is the side that deletes — a basis nobody can spell must
+        // not be the reason conditions survive somebody's own erasure request
+        if (ClosureInitiator.of(initiatedBy) != ClosureInitiator.SELF
+                || ClosureInitiator.of(running.initiatedBy()) != ClosureInitiator.ADMIN) {
             return;
         }
         try (PreparedStatement update = connection.prepareStatement(
                 "UPDATE offboarding_sagas SET initiated_by = ?, policy = NULL "
                         + "WHERE id = ? AND state = 'STARTED'")) {
-            update.setString(1, RequestedBy.SELF);
+            update.setString(1, ClosureInitiator.SELF.wire());
             update.setObject(2, running.id());
             update.executeUpdate();
         }

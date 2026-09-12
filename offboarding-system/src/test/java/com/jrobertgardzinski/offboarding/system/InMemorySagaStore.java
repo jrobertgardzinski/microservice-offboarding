@@ -1,6 +1,6 @@
 package com.jrobertgardzinski.offboarding.system;
 
-import com.jrobertgardzinski.offboarding.domain.RequestedBy;
+import com.jrobertgardzinski.closure.ClosureInitiator;
 import com.jrobertgardzinski.offboarding.domain.Compensated;
 import com.jrobertgardzinski.offboarding.domain.Opening;
 import com.jrobertgardzinski.offboarding.domain.PendingOutcome;
@@ -100,9 +100,9 @@ public class InMemorySagaStore implements SagaStore {
             // and the one other thing a joining fact may change: an administrator's closure that
             // the OWNER then asks for themselves becomes the owner's, conditions dropped. Only
             // ever ADMIN → SELF; mirrors the JDBC adapter (see JdbcSagaStore#adoptSelfRequest)
-            if (RequestedBy.SELF.equals(opening.initiatedBy())
-                    && RequestedBy.ADMIN.equals(running.get().initiatedBy)) {
-                running.get().initiatedBy = RequestedBy.SELF;
+            if (ClosureInitiator.of(opening.initiatedBy()) == ClosureInitiator.SELF
+                    && ClosureInitiator.of(running.get().initiatedBy) == ClosureInitiator.ADMIN) {
+                running.get().initiatedBy = ClosureInitiator.SELF.wire();
                 running.get().policy = null;
             }
             return running.get().id;
