@@ -2,7 +2,7 @@ package com.jrobertgardzinski.offboarding.boundary;
 
 import com.jrobertgardzinski.offboarding.control.EventsRouter;
 import com.jrobertgardzinski.offboarding.entity.Observation;
-import com.jrobertgardzinski.offboarding.control.Observations;
+import com.jrobertgardzinski.observation.Observations;
 import com.jrobertgardzinski.offboarding.control.SagaStore;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -149,10 +149,10 @@ public class KafkaLoop {
     private Thread sweeperThread;
     private final AtomicBoolean started = new AtomicBoolean();
     /** Where this loop STATES what it noticed; the adapter decides these are counters. */
-    private final Observations observations;
+    private final Observations<Observation> observations;
 
     public KafkaLoop(EventsRouter router, SagaStore store, Collection<String> topics,
-                     Duration sweepEvery, Observations observations) {
+                     Duration sweepEvery, Observations<Observation> observations) {
         this(router, store, topics, sweepEvery, DELIVERY_TIMEOUT, REQUEST_TIMEOUT, MAX_BLOCK,
                 PROBE_TIMEOUT, observations);
     }
@@ -164,7 +164,7 @@ public class KafkaLoop {
      */
     KafkaLoop(EventsRouter router, SagaStore store, Collection<String> topics, Duration sweepEvery,
               Duration deliveryTimeout, Duration requestTimeout, Duration maxBlock,
-              Duration probeTimeout, Observations observations) {
+              Duration probeTimeout, Observations<Observation> observations) {
         this.observations = observations;
         this.router = router;
         this.store = store;

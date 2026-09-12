@@ -44,12 +44,20 @@ jobs:
         with:
           repository: jrobertgardzinski/microservice-security
           path: shared/microservice-security
+      # the observation port this service states its facts through — a LIBRARY, so it is built and
+      # installed rather than merely read like the pact neighbours above
+      - uses: actions/checkout@v7
+        with:
+          repository: jrobertgardzinski/observation
+          path: observation
       - name: Set up JDK 25
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
           cache: maven
+      - name: Install the shared libraries
+        run: mvn -B -q --no-transfer-progress -f observation/pom.xml install -DskipTests
       - name: Build and test (including pact provider verification)
         run: mvn -B --no-transfer-progress -f portal/microservice-offboarding/pom.xml clean verify
 

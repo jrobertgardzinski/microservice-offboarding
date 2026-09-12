@@ -11,7 +11,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jrobertgardzinski.offboarding.control.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.control.RecordConfirmation;
 import com.jrobertgardzinski.offboarding.entity.Observation;
-import com.jrobertgardzinski.offboarding.control.Observations;
+import com.jrobertgardzinski.observation.Observations;
 import com.jrobertgardzinski.offboarding.control.SagaStore;
 import com.jrobertgardzinski.offboarding.control.SweepOverdue;
 import org.slf4j.Logger;
@@ -139,13 +139,13 @@ public class EventsRouter {
     private final ObjectMapper mapper;
     private final Clock clock;
     /** Where this router STATES what it noticed; the adapter decides these are counters. */
-    private final Observations observations;
+    private final Observations<Observation> observations;
 
     public EventsRouter(String factsTopic, Map<String, String> participantByTopic,
                         BeginOffboarding begin, RecordConfirmation confirm, SweepOverdue sweep,
                         ObjectMapper mapper, Clock clock) {
         this(factsTopic, participantByTopic, begin, confirm, sweep, mapper, clock,
-                Observations.SILENT);
+                Observations.<Observation>silent());
     }
 
     /**
@@ -155,7 +155,7 @@ public class EventsRouter {
      */
     public EventsRouter(String factsTopic, Map<String, String> participantByTopic,
                         BeginOffboarding begin, RecordConfirmation confirm, SweepOverdue sweep,
-                        ObjectMapper mapper, Clock clock, Observations observations) {
+                        ObjectMapper mapper, Clock clock, Observations<Observation> observations) {
         this.observations = observations;
         this.factsTopic = factsTopic;
         this.participantByTopic = participantByTopic;

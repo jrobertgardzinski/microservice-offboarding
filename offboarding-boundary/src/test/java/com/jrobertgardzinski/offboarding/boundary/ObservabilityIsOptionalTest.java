@@ -1,7 +1,7 @@
 package com.jrobertgardzinski.offboarding.boundary;
 
 import com.jrobertgardzinski.offboarding.control.EventsRouter;
-import com.jrobertgardzinski.offboarding.control.Observations;
+import com.jrobertgardzinski.observation.Observations;
 import com.jrobertgardzinski.offboarding.entity.Observation;
 import com.jrobertgardzinski.offboarding.control.RouterFixture;
 import io.qameta.allure.Epic;
@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>The second half is unusually cheap to prove here, and deliberately so: every other test in
  * this module drives the router and the loop through the constructors that default to
- * {@code Observations.SILENT}. The whole saga suite — the pacts, the sweeper, the outbox, the
+ * {@code Observations.<Observation>silent()}. The whole saga suite — the pacts, the sweeper, the outbox, the
  * poison pills — already runs unwatched and passes, which is exactly the claim. What is left for
  * this test is to say so out loud, and to guard the direction of the dependency.
  */

@@ -1,7 +1,8 @@
 package com.jrobertgardzinski.offboarding.boundary;
 
+import com.jrobertgardzinski.offboarding.entity.Observation;
 import com.jrobertgardzinski.offboarding.control.EventsRouter;
-import com.jrobertgardzinski.offboarding.control.Observations;
+import com.jrobertgardzinski.observation.Observations;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jrobertgardzinski.offboarding.control.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.control.RecordConfirmation;
@@ -190,7 +191,7 @@ public final class Main {
         var participants = Map.copyOf(participantByTopic).values().stream()
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
         // the composition root's one watcher: everything that states a fact is handed THIS, and
-        // /metrics reads it back out. Swap it for Observations.SILENT and the service runs
+        // /metrics reads it back out. Swap it for Observations.<Observation>silent() and the service runs
         // unobserved rather than broken — which is the whole point of the port
         ExportedObservations observations = new ExportedObservations();
         EventsRouter router = new EventsRouter(factsTopic, participantByTopic,

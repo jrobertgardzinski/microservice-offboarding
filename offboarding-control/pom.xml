@@ -30,6 +30,12 @@
             <artifactId>offboarding-entity</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <!-- the port this service states its own facts through; the facts stay in entity -->
+            <groupId>com.jrobertgardzinski</groupId>
+            <artifactId>observation</artifactId>
+            <version>1.0.0-SNAPSHOT</version>
+        </dependency>
     </dependencies>
 
     <build>

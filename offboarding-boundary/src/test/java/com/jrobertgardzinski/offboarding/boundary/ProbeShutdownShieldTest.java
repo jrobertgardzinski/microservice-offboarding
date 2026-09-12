@@ -1,5 +1,6 @@
 package com.jrobertgardzinski.offboarding.boundary;
 
+import com.jrobertgardzinski.offboarding.entity.Observation;
 import com.jrobertgardzinski.offboarding.control.RouterFixture;
 import io.qameta.allure.Epic;
 import io.qameta.allure.Feature;
@@ -39,7 +40,7 @@ class ProbeShutdownShieldTest {
     private final RouterFixture fixture = RouterFixture.router();
     private final KafkaLoop loop = new KafkaLoop(
             fixture.router, fixture.store, List.of("security-events"), Duration.ofSeconds(15),
-            com.jrobertgardzinski.offboarding.control.Observations.SILENT);
+            com.jrobertgardzinski.observation.Observations.<Observation>silent());
 
     @AfterEach
     void clearTheInterruptKafkaSet() {

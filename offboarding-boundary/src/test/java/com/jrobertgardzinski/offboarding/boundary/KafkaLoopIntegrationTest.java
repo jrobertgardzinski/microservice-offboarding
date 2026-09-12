@@ -1,5 +1,6 @@
 package com.jrobertgardzinski.offboarding.boundary;
 
+import com.jrobertgardzinski.offboarding.entity.Observation;
 import com.jrobertgardzinski.offboarding.entity.Opening;
 import com.jrobertgardzinski.offboarding.entity.PendingOutcome;
 import com.jrobertgardzinski.offboarding.entity.Recorded;
@@ -485,7 +486,7 @@ class KafkaLoopIntegrationTest {
                 new SweepOverdue(store, Duration.ofMinutes(5)), MAPPER, Clock.systemUTC());
         KafkaLoop loop = new KafkaLoop(router, store, List.of(facts), Duration.ofMillis(200),
                 deliveryTimeout, Duration.ofSeconds(1), deliveryTimeout, Duration.ofSeconds(1),
-                com.jrobertgardzinski.offboarding.control.Observations.SILENT);
+                com.jrobertgardzinski.observation.Observations.<Observation>silent());
         loop.start("localhost:1");
         loops.add(loop);
 
@@ -523,7 +524,7 @@ class KafkaLoopIntegrationTest {
         KafkaLoop loop = new KafkaLoop(router, store, List.of(facts), Duration.ofHours(1),
                 Duration.ofSeconds(2), Duration.ofSeconds(1), Duration.ofSeconds(2),
                 Duration.ofSeconds(1),   // the seam: 1s of probe patience instead of 5
-                com.jrobertgardzinski.offboarding.control.Observations.SILENT);
+                com.jrobertgardzinski.observation.Observations.<Observation>silent());
         loop.start("localhost:1");
         loops.add(loop);
 

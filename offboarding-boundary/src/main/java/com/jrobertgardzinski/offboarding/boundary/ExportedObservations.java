@@ -1,7 +1,7 @@
 package com.jrobertgardzinski.offboarding.boundary;
 
 import com.jrobertgardzinski.offboarding.entity.Observation;
-import com.jrobertgardzinski.offboarding.control.Observations;
+import com.jrobertgardzinski.observation.Observations;
 
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * into from two packages away. The composition root holds one and hands it to everything that
  * states a fact.
  */
-public final class ExportedObservations implements Observations {
+public final class ExportedObservations implements Observations<Observation> {
 
     private final AtomicLong compensated = new AtomicLong();
     private final AtomicLong retriesDelivered = new AtomicLong();
