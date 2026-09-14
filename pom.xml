@@ -12,7 +12,7 @@
     <parent>
         <groupId>io.helidon.applications</groupId>
         <artifactId>helidon-se</artifactId>
-        <version>4.5.1</version>
+        <version>4.5.4</version>
         <relativePath/>
     </parent>
 
@@ -53,8 +53,8 @@
     <properties>
         <mainClass>com.jrobertgardzinski.offboarding.infrastructure.Main</mainClass>
         <cucumber.version>7.20.1</cucumber.version>
-        <junit-suite.version>6.1.2</junit-suite.version>
-        <allure.version>2.35.4</allure.version>
+        <junit-suite.version>6.1.3</junit-suite.version>
+        <allure.version>2.35.5</allure.version>
         <!-- the same Testcontainers the workspace already runs (microservice-memes gets 1.21.2
              from the Spring Boot 3.5.3 BOM; this Helidon build pins it explicitly) -->
         <testcontainers.version>1.21.4</testcontainers.version>
@@ -97,7 +97,7 @@
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.6.1</version>
+            <version>1.6.3</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
@@ -199,13 +199,13 @@
         <dependency>
             <groupId>au.com.dius.pact.consumer</groupId>
             <artifactId>junit5</artifactId>
-            <version>4.7.3</version>
+            <version>4.7.5</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>au.com.dius.pact.provider</groupId>
             <artifactId>junit5</artifactId>
-            <version>4.7.3</version>
+            <version>4.7.5</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
