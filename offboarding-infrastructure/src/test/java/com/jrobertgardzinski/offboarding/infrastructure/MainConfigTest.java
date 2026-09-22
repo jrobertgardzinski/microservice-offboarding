@@ -17,7 +17,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * that names the variable (not a bare NumberFormatException), the sweeper's stall tolerance is
  * floored at the sweep interval — below it /health would call a healthy sweeper stalled — and the
  * participant spec may not name a participant or a topic twice, because either repeat shrinks the
- * set of confirmations the saga waits for and buys a premature PORTAL_CONTENT_PURGED.
+ * set of confirmations the saga waits for and buys a premature PORTAL_CONTENT_PURGED — nor name
+ * nobody at all, nor put a participant on the facts topic, which buy the same verdict by two
+ * other roads.
  */
 @Epic("Config")
 @Feature("Boot-time validation")
@@ -275,7 +277,49 @@ class MainConfigTest {
                 Main.parseParticipants(" memes = memes-events , comments = comments-events "),
                 "a spec pasted from a YAML manifest carries spaces; they are not a typo");
         assertEquals(Map.of(), Main.parseParticipants(""),
-                "and an empty spec still means what the code says it means: no content"
-                        + " participants at all (dev, tests) — not a refusal");
+                "and the PARSER still reads an empty spec as no pairs — the refusal of a"
+                        + " deployment that names nobody belongs to participantsOrRefuse, not here");
+    }
+
+    @Test
+    void a_participant_spec_that_names_nobody_refuses_to_boot() {
+        // THE finding this pins. getOrDefault substitutes the shipped spec only when the variable
+        // is ABSENT: an OFFBOARDING_PARTICIPANTS rendered blank (an unexpanded ${...}, an empty
+        // ConfigMap key, an empty compose value) used to pass "" straight through and boot with a
+        // quorum of ZERO. Every deletion was then answered "the portal is clean" within
+        // milliseconds — PORTAL_CONTENT_PURGED with no purge command on the wire at all — security
+        // deleted the account for good, and every meme, comment and collection stayed where it
+        // was. The only trace was "(0 participants: [])" in the boot log.
+        for (String namesNobody : new String[]{"", "   ", ",", " , ,"}) {
+            IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                    () -> Main.participantsOrRefuse(namesNobody, "security-events"),
+                    "must refuse the spec \"" + namesNobody + "\"");
+            assertTrue(refusal.getMessage().contains(Main.PARTICIPANTS_ENV),
+                    "the refusal must name the variable to fix: " + refusal.getMessage());
+        }
+        assertEquals(Map.of("memes-events", "memes", "comments-events", "comments",
+                        "usercollections-events", "collections"),
+                Main.participantsOrRefuse(Main.DEFAULT_PARTICIPANTS, "security-events"),
+                "a spec that names somebody boots untouched");
+    }
+
+    @Test
+    void a_participant_sitting_on_the_facts_topic_refuses_to_boot() {
+        // the collision nothing compared: parseParticipants checks the participants' topics
+        // against EACH OTHER, never against OFFBOARDING_FACTS_TOPIC. SagaTopics.senderOf answers
+        // the facts topic first, so that participant's confirmations arrive as security's and fall
+        // to the router's "default -> List.of()" in silence: the saga waits for a participant that
+        // IS answering, burns its retries, compensates, restores content the leaver asked to have
+        // deleted and tells security the purge failed after it succeeded
+        IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                () -> Main.participantsOrRefuse("memes=security-events,comments=comments-events",
+                        "security-events"));
+        assertTrue(refusal.getMessage().contains(Main.PARTICIPANTS_ENV)
+                        && refusal.getMessage().contains("OFFBOARDING_FACTS_TOPIC"),
+                "the refusal must name BOTH variables — the operator has to know which of the two"
+                        + " to move: " + refusal.getMessage());
+        assertTrue(refusal.getMessage().contains("memes")
+                        && refusal.getMessage().contains("security-events"),
+                "and the participant and the topic they collided on: " + refusal.getMessage());
     }
 }

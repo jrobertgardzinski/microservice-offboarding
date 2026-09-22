@@ -425,8 +425,10 @@ public class KafkaLoop {
             if (each.outgoing().countsRetryFor() != null
                     // the delivery just happened, so now IS the stamp — and the stamp is the
                     // participant's budget for this re-command: the sweep's overdue clock runs
-                    // from it (SagaStore#retryDelivered)
-                    && store.retryDelivered(each.outgoing().countsRetryFor(), Instant.now())) {
+                    // from it (SagaStore#retryDelivered). The charge names the round the sweep
+                    // offered, so a second sweeper's report of the same round buys nothing
+                    && store.retryDelivered(each.outgoing().countsRetryFor().sagaId(),
+                    each.outgoing().countsRetryFor().retriesSoFar(), Instant.now())) {
                 // metered only when the store actually charged the counter: a delivery landing
                 // on a saga that meanwhile finished is a no-op there and must be one here too,
                 // or the metric would drift ahead of the sum of retries in the store
@@ -566,14 +568,21 @@ public class KafkaLoop {
      * data, because a saga id names a CASE, not a person — the key already carries the address,
      * the header must not add a second copy of it.
      *
+     * <p>Off {@link EventsRouter.Outgoing#partOfSaga}, which is the saga EVERY sweeper message
+     * belongs to — including the ones that announce nothing and charge no retry. Reading only the
+     * announcement and the re-command left the compensation's {@code RESTORE_USER_CONTENT} and the
+     * commands riding each re-announcement bare, so the verdict an operator follows carried an id
+     * while the command that was supposed to give the content back carried none: precisely the
+     * failure paths this method exists for.
+     *
      * <p>What it does NOT do: reconnect to the cid of the HTTP request that began the deletion.
      * That would mean carrying the request's cid on the saga row (a column, a migration, and the
      * store's business) — worth doing, not worth smuggling into this fix.
+     *
+     * <p>Package-private so the test can read the id off an event the router really built.
      */
-    private static String sweepCid(EventsRouter.Outgoing outgoing) {
-        UUID saga = outgoing.announcesSaga() != null
-                ? outgoing.announcesSaga()
-                : outgoing.countsRetryFor();
+    static String sweepCid(EventsRouter.Outgoing outgoing) {
+        UUID saga = outgoing.partOfSaga();
         return saga == null ? null : "saga-" + saga.toString().substring(0, 8);
     }
 

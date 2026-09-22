@@ -131,6 +131,7 @@ class KafkaLoopIntegrationTest {
         try (Connection connection = dataSource.getConnection();
              Statement statement = connection.createStatement()) {
             statement.executeUpdate("DELETE FROM offboarding_confirmations");
+            statement.executeUpdate("DELETE FROM offboarding_saga_facts");
             statement.executeUpdate("DELETE FROM offboarding_sagas");
         }
     }
@@ -803,8 +804,8 @@ class KafkaLoopIntegrationTest {
         }
 
         @Override
-        public boolean complete(String email, Instant at) {
-            return inner.complete(email, at);
+        public boolean complete(UUID sagaId, Instant at) {
+            return inner.complete(sagaId, at);
         }
 
         @Override
@@ -813,8 +814,8 @@ class KafkaLoopIntegrationTest {
         }
 
         @Override
-        public boolean retryDelivered(UUID sagaId, Instant at) {
-            return inner.retryDelivered(sagaId, at);
+        public boolean retryDelivered(UUID sagaId, int retriesSoFar, Instant at) {
+            return inner.retryDelivered(sagaId, retriesSoFar, at);
         }
 
         @Override

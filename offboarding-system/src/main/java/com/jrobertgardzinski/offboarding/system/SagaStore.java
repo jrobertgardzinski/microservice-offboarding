@@ -63,8 +63,24 @@ public interface SagaStore {
     Optional<Recorded> confirm(String email, UUID sagaId, String participant, Set<String> required,
                                Instant at);
 
-    /** STARTED straight to COMPLETED (no participants required); true only for the call that did it. */
-    boolean complete(String email, Instant at);
+    /**
+     * STARTED straight to COMPLETED for the saga NAMED — the case with nobody to wait for; true
+     * only for the call that did it.
+     *
+     * <p>It takes the saga id and not the address, because an address is a person and a person can
+     * ask twice. Addressed by email this settled whatever saga happened to be RUNNING for that
+     * account, which is not the same case at all: a replayed fact whose own saga finished long ago
+     * would force-complete the deletion running for that person now.
+     *
+     * <p>And the named saga's own quorum has the last word: a saga that recorded participants
+     * (V6) is never completed here, whatever the caller's configuration says now. Zero
+     * participants is the CALLER's present state, while the quorum on the row is what this case
+     * opened with — completing across that difference is precisely the re-configuration V6 exists
+     * to keep out of cases already under way, and it would announce the portal purged with no
+     * confirmation on file. A row that recorded nothing (NULL — opened before V6) still defers to
+     * the caller, exactly as it does for {@link #confirm}.
+     */
+    boolean complete(UUID sagaId, Instant at);
 
     /**
      * STARTED and UNTOUCHED since before the cutoff: re-command while retries remain, COMPENSATED
@@ -94,8 +110,17 @@ public interface SagaStore {
      * cutoff is derived from; a second clock (the database's) would put skew straight into that
      * budget. Returns whether the counter actually moved — false for the no-op on a finished or
      * unknown saga — so the caller's retries-delivered metric counts charges, never no-ops.
+     *
+     * <p>{@code retriesSoFar} is the counter the sweep handed out with the candidate
+     * ({@link Retry#retriesSoFar}), and the charge only applies while the row still reads that
+     * way. An increment with no such condition is one charge PER SWEEPER: nothing stops two
+     * sweeps (two pods mid-rollout, say) from selecting the same overdue saga and both reporting
+     * their re-command delivered, and the counter then runs 0 → 2 in a round the budget sized for
+     * one. Half the retries a case is supposed to get, spent silently, and no later pass can tell
+     * the number is wrong. The duplicate COMMAND is free — participants are idempotent — so what
+     * has to be exactly-once is the charge, not the send.
      */
-    boolean retryDelivered(UUID sagaId, Instant at);
+    boolean retryDelivered(UUID sagaId, int retriesSoFar, Instant at);
 
     /** The outbox's second half: the saga's outcome reached the broker, remember that. */
     void markAnnounced(UUID sagaId);

@@ -152,8 +152,8 @@ public final class Main {
         // (int) casts sit on checked ranges, so they can no longer truncate silently
         int port = (int) longEnv("OFFBOARDING_PORT", 8094, 1, 65535);
         String factsTopic = System.getenv().getOrDefault("OFFBOARDING_FACTS_TOPIC", "security-events");
-        Map<String, String> participantByTopic = parseParticipants(
-                System.getenv().getOrDefault(PARTICIPANTS_ENV, DEFAULT_PARTICIPANTS));
+        Map<String, String> participantByTopic = participantsOrRefuse(
+                System.getenv().getOrDefault(PARTICIPANTS_ENV, DEFAULT_PARTICIPANTS), factsTopic);
         // The saga's clocks are CONSTANTS, not environment. Six of these used to be env vars
         // with ranges and a boot-time refusal, and in the whole estate — compose, k8s, e2e, the
         // smoke script — not one deployment ever set a single one of them. That is the expensive
@@ -245,9 +245,9 @@ public final class Main {
 
         // the COUNT next to the set, not just the set: it is the number of confirmations every
         // saga will wait for, and an operator comparing it against the services actually deployed
-        // is the second line of defence behind parseParticipants' duplicate refusal (a spec that
-        // maps three topics onto two names cannot boot any more, but "0 participants" — an empty
-        // spec, which is legal — still deserves to be readable at a glance in the boot log)
+        // is the second line of defence behind the boot refusals (a spec that maps three topics
+        // onto two names cannot boot any more, and neither can one that names nobody at all —
+        // see participantsOrRefuse)
         System.out.println("offboarding listening on port " + server.port()
                 + " (" + participants.size() + " participants: " + participants + ")");
     }
@@ -336,6 +336,51 @@ public final class Main {
     }
 
     /**
+     * The participants this deployment actually boots with — {@link #parseParticipants} plus the
+     * two refusals that need the REST of the configuration to be readable.
+     *
+     * <p>A spec that names NOBODY is the first. It parses perfectly ("" is a spec with no pairs),
+     * and the saga it produces has a quorum of zero: {@code BeginOffboarding} completes on the spot
+     * and the portal announces {@code PORTAL_CONTENT_PURGED} without one command on the wire, so
+     * security deletes the account while every meme, comment and collection stays exactly where it
+     * was. That is the same outcome a duplicated participant name refuses to boot on, arrived at by
+     * a shorter road: {@code OFFBOARDING_PARTICIPANTS} rendered blank by an unexpanded
+     * {@code ${...}}, an empty ConfigMap key or an empty compose value spells identically to a
+     * deliberate "no content services", and this service has no business guessing which was meant.
+     * An identity-only deployment does not run this service at all (see the README), so the blank
+     * value has no legitimate reading left. Blank does NOT fall back to the default the way
+     * {@link #parseLongOrRefuse} does for the numbers: silently commanding three participants
+     * nobody asked for is a different deployment, not a default.
+     *
+     * <p>A participant sharing the FACTS topic is the second. {@link SagaTopics#senderOf} answers
+     * the facts topic first, so that participant's confirmations would arrive as security's and
+     * fall off the router's switchboard in silence — the saga waits for a participant that IS
+     * answering, burns its retries, compensates, and tells security the purge failed after it
+     * succeeded. Exactly what the duplicate-topic refusal prevents BETWEEN participants; the facts
+     * topic is simply the one topic that check never saw.
+     */
+    static Map<String, String> participantsOrRefuse(String spec, String factsTopic) {
+        Map<String, String> byTopic = parseParticipants(spec);
+        if (byTopic.isEmpty()) {
+            throw new IllegalArgumentException(PARTICIPANTS_ENV + " names no participant (\"" + spec
+                    + "\"); a saga with a quorum of zero announces the portal purged without"
+                    + " commanding anybody, and security deletes the account while the content"
+                    + " stays — every deployment of this service needs at least one name=topic"
+                    + " pair");
+        }
+        String sharesFactsTopic = byTopic.get(factsTopic);
+        if (sharesFactsTopic != null) {
+            throw new IllegalArgumentException(PARTICIPANTS_ENV + " puts the participant \""
+                    + sharesFactsTopic + "\" on \"" + factsTopic + "\", the facts topic"
+                    + " (OFFBOARDING_FACTS_TOPIC); its confirmations would arrive as security's and"
+                    + " be dropped in silence, so the saga would wait out its retries and announce"
+                    + " a failed purge for a purge that happened — every participant needs its own"
+                    + " confirmation topic");
+        }
+        return byTopic;
+    }
+
+    /**
      * {@code memes=memes-events,comments=comments-events} → {topic → participant}.
      *
      * <p>BOTH halves have to be unique, and a repeat refuses to boot instead of quietly shrinking
@@ -357,7 +402,8 @@ public final class Main {
         for (String pair : spec.split(",")) {
             String trimmed = pair.trim();
             if (trimmed.isEmpty()) {
-                continue;   // an empty spec means: no content participants at all
+                continue;   // a doubled or trailing comma; a spec that ends up naming NOBODY is
+                            // refused at boot, by participantsOrRefuse
             }
             String[] parts = trimmed.split("=", 2);
             if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {

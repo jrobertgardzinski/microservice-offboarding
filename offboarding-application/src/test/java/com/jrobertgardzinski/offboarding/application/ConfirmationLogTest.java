@@ -73,7 +73,7 @@ class ConfirmationLogTest {
         // gave up on. It changes nothing, and the log must not suggest the saga is still collecting
         RouterFixture fixture = router().withRunningSagaFor(LEAVER);
         UUID closed = fixture.store.all().get(0).id;
-        fixture.store.complete(LEAVER, java.time.Instant.parse("2026-07-11T12:00:00Z"));
+        fixture.store.complete(closed, java.time.Instant.parse("2026-07-11T12:00:00Z"));
         fixture.router.handle(Source.participant("memes"), confirmation(closed));
         assertTrue(logged("dropping stray memes purge confirmation"), logged().toString());
         assertFalse(logged("recorded memes purge confirmation"), logged().toString());

@@ -161,7 +161,7 @@ class VerdictCorrelationTest {
         out.stream()
                 .map(EventsRouter.Outgoing::countsRetryFor)
                 .filter(java.util.Objects::nonNull)
-                .forEach(saga -> store.retryDelivered(saga, now));
+                .forEach(charge -> store.retryDelivered(charge.sagaId(), charge.retriesSoFar(), now));
         return out;
     }
 

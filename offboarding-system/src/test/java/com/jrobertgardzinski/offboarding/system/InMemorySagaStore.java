@@ -82,13 +82,16 @@ public class InMemorySagaStore implements SagaStore {
     }
 
     private final Map<UUID, Saga> sagas = new LinkedHashMap<>();
+    /** Every fact ever answered with a saga id, the one that OPENED it and the ones that merely
+     *  joined it — mirrors V8, without which a joining fact's redelivery forks a second saga
+     *  once the case it joined has finished. */
+    private final Map<UUID, UUID> sagaByFact = new LinkedHashMap<>();
 
     @Override
     public UUID start(Opening opening, Instant at) {
-        Optional<Saga> replayed = sagas.values().stream()
-                .filter(saga -> saga.factId.equals(opening.factId())).findFirst();
-        if (replayed.isPresent()) {
-            return replayed.get().id;
+        UUID replayed = sagaByFact.get(opening.factId());
+        if (replayed != null) {
+            return replayed;
         }
         Optional<Saga> running = running(opening.email());
         if (running.isPresent()) {
@@ -105,11 +108,13 @@ public class InMemorySagaStore implements SagaStore {
                 running.get().initiatedBy = ClosureInitiator.SELF.wire();
                 running.get().policy = null;
             }
+            sagaByFact.put(opening.factId(), running.get().id);   // the join, remembered (V8)
             return running.get().id;
         }
         Saga saga = new Saga(UUID.randomUUID(), opening.factId(), opening.email(), opening.policy(),
                 opening.securitySagaId(), opening.participants(), at, opening.initiatedBy());
         sagas.put(saga.id, saga);
+        sagaByFact.put(saga.factId, saga.id);
         return saga.id;
     }
 
@@ -140,12 +145,17 @@ public class InMemorySagaStore implements SagaStore {
     }
 
     @Override
-    public boolean complete(String email, Instant at) {
-        return running(email).map(saga -> {
-            saga.state = "COMPLETED";
-            saga.updatedAt = at;
-            return true;
-        }).orElse(false);
+    public boolean complete(UUID sagaId, Instant at) {
+        // the saga named, and only while it waits for nobody — mirrors the JDBC adapter, including
+        // the null quorum (a saga that recorded none) deferring to the caller
+        Saga saga = sagas.get(sagaId);
+        if (saga == null || !"STARTED".equals(saga.state)
+                || (saga.requiredParticipants != null && !saga.requiredParticipants.isEmpty())) {
+            return false;
+        }
+        saga.state = "COMPLETED";
+        saga.updatedAt = at;
+        return true;
     }
 
     @Override
@@ -160,7 +170,8 @@ public class InMemorySagaStore implements SagaStore {
                     // a candidate, not a charge: retryDelivered() moves the counter once the
                     // re-command reached the broker — mirrors the JDBC adapter. The stored
                     // policy rides along so the re-command repeats the original
-                    retries.add(new Retry(saga.id, saga.email, saga.policy, saga.initiatedBy));
+                    retries.add(new Retry(saga.id, saga.email, saga.policy, saga.initiatedBy,
+                            saga.retries));
                 } else {
                     saga.state = "COMPENSATED";
                     saga.updatedAt = at;
@@ -173,9 +184,11 @@ public class InMemorySagaStore implements SagaStore {
     }
 
     @Override
-    public boolean retryDelivered(UUID sagaId, Instant at) {
+    public boolean retryDelivered(UUID sagaId, int retriesSoFar, Instant at) {
         Saga saga = sagas.get(sagaId);
-        if (saga != null && "STARTED".equals(saga.state)) {
+        // the round the sweep offered, not just any round — mirrors the JDBC adapter's
+        // "AND retries = ?", without which two sweepers charge one re-command twice
+        if (saga != null && "STARTED".equals(saga.state) && saga.retries == retriesSoFar) {
             saga.retries++;
             // the stamp that gives the participant its budget: the sweep's overdue clock restarts
             // here — mirrors the JDBC adapter, the caller's instant in both
@@ -210,6 +223,7 @@ public class InMemorySagaStore implements SagaStore {
                 .map(saga -> saga.id)
                 .toList();
         gone.forEach(sagas::remove);
+        sagaByFact.values().removeIf(gone::contains);
         return gone.size();
     }
 
@@ -226,6 +240,7 @@ public class InMemorySagaStore implements SagaStore {
     public UUID startWithId(UUID sagaId, UUID factId, String email, UUID securitySagaId, Instant at) {
         Saga saga = new Saga(sagaId, factId, email, null, securitySagaId, null, at);
         sagas.put(saga.id, saga);
+        sagaByFact.put(saga.factId, saga.id);
         return saga.id;
     }
 

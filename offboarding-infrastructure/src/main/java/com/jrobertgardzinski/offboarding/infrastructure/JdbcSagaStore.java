@@ -72,6 +72,11 @@ public class JdbcSagaStore implements SagaStore {
                     // verdict echoing it would land nowhere
                     adoptSecurityHandle(connection, running.get(), opening.securitySagaId());
                     adoptSelfRequest(connection, running.get(), opening.initiatedBy());
+                    // and the join is REMEMBERED (V8). The running-saga lookup answers only while
+                    // the case runs, so without this row a redelivery of this fact after the case
+                    // finished would find nothing and open a second saga — re-commanding a purge
+                    // on an account whose compensation had just given its content back
+                    recordJoiningFact(connection, opening.factId(), running.get().id());
                     return running.get().id();
                 }
                 UUID id = UUID.randomUUID();
@@ -106,12 +111,36 @@ public class JdbcSagaStore implements SagaStore {
         }
     }
 
+    /**
+     * The saga this fact already belongs to — whether it OPENED it (V1's unique fact_id) or merely
+     * joined it (V8). Both, because both were answered with a saga id once, and a fact that gets
+     * two different answers on two deliveries is the fork this lookup exists to prevent.
+     */
     private static Optional<UUID> sagaOfFact(Connection connection, UUID factId) throws SQLException {
         try (PreparedStatement select = connection.prepareStatement(
-                "SELECT id FROM offboarding_sagas WHERE fact_id = ?")) {
+                "SELECT id FROM offboarding_sagas WHERE fact_id = ? "
+                        + "UNION ALL "
+                        + "SELECT saga_id FROM offboarding_saga_facts WHERE fact_id = ?")) {
             select.setObject(1, factId);
+            select.setObject(2, factId);
             try (ResultSet rows = select.executeQuery()) {
                 return rows.next() ? Optional.of(rows.getObject(1, UUID.class)) : Optional.empty();
+            }
+        }
+    }
+
+    /** The joining fact's row; a redelivery racing its twin loses on the primary key, which is
+     *  the same answer as writing it — the fact already points at this saga. */
+    private static void recordJoiningFact(Connection connection, UUID factId, UUID sagaId)
+            throws SQLException {
+        try (PreparedStatement insert = connection.prepareStatement(
+                "INSERT INTO offboarding_saga_facts (fact_id, saga_id) VALUES (?, ?)")) {
+            insert.setObject(1, factId);
+            insert.setObject(2, sagaId);
+            insert.executeUpdate();
+        } catch (SQLException duplicate) {
+            if (!UNIQUE_VIOLATION.equals(duplicate.getSQLState())) {
+                throw duplicate;
             }
         }
     }
@@ -165,10 +194,19 @@ public class JdbcSagaStore implements SagaStore {
     }
 
     @Override
-    public boolean complete(String email, Instant at) {
-        try (Connection connection = dataSource.getConnection()) {
-            Optional<Target> running = runningSaga(connection, email);
-            return running.isPresent() && completeStarted(connection, running.get().id(), at);
+    public boolean complete(UUID sagaId, Instant at) {
+        // the saga NAMED, and only while it waits for nobody: the quorum on the row (V6) outranks
+        // the caller's current configuration here exactly as it does in confirm() above. NULL —
+        // a row from before the column — still defers to the caller, which is why the guard
+        // spells out both spellings of "no quorum recorded"
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement update = connection.prepareStatement(
+                     "UPDATE offboarding_sagas SET state = 'COMPLETED', running_email = NULL, "
+                             + "updated_at = ? WHERE id = ? AND state = 'STARTED' "
+                             + "AND (required_participants IS NULL OR required_participants = '')")) {
+            update.setTimestamp(1, Timestamp.from(at));
+            update.setObject(2, sagaId);
+            return update.executeUpdate() == 1;
         } catch (SQLException e) {
             throw new IllegalStateException("could not complete offboarding saga", e);
         }
@@ -210,7 +248,7 @@ public class JdbcSagaStore implements SagaStore {
                     // command on the wire, and the saga would compensate having never re-asked.
                     // The stored policy rides along so the re-command repeats the original
                     retries.add(new Retry(saga.id(), saga.email(), saga.policy(),
-                            saga.initiatedBy()));
+                            saga.initiatedBy(), saga.retriesSoFar()));
                 } else {
                     // retries exhausted — give up, freeing the email for a future saga, and tell
                     // the caller who DID confirm so the failure can name the partial purge
@@ -234,7 +272,7 @@ public class JdbcSagaStore implements SagaStore {
     }
 
     @Override
-    public boolean retryDelivered(UUID sagaId, Instant at) {
+    public boolean retryDelivered(UUID sagaId, int retriesSoFar, Instant at) {
         // the delivered-first discipline (see SagaStore): only a re-command the broker ACCEPTED
         // moves the counter, so the state guard keeps a late delivery off a finished saga.
         // updated_at moves with it, and it now MATTERS: the sweep's overdue clock runs from this
@@ -244,13 +282,20 @@ public class JdbcSagaStore implements SagaStore {
         // charge the leaver's content for the skew between them. Only STARTED sagas qualify, so
         // the finished states' age guards never see it. The updated-row count IS the answer:
         // 0 rows means the no-op on a finished or unknown saga, and the caller's metric must not
-        // count what was never charged
+        // count what was never charged.
+        // The retries guard is the second half of that honesty: the charge pays for the round the
+        // sweep OFFERED, so it applies only while the counter still reads what that sweep read.
+        // The SELECT that finds overdue sagas takes no lock (it does not need one — re-commanding
+        // an idempotent participant twice costs nothing), so two sweepers can hold the same
+        // candidate; without this condition both increments land and the case loses half its
+        // budget in one round
         try (Connection connection = dataSource.getConnection();
              PreparedStatement update = connection.prepareStatement(
                      "UPDATE offboarding_sagas SET retries = retries + 1, updated_at = ? "
-                             + "WHERE id = ? AND state = 'STARTED'")) {
+                             + "WHERE id = ? AND state = 'STARTED' AND retries = ?")) {
             update.setTimestamp(1, Timestamp.from(at));
             update.setObject(2, sagaId);
+            update.setInt(3, retriesSoFar);
             return update.executeUpdate() == 1;
         } catch (SQLException e) {
             throw new IllegalStateException("could not count the delivered retry", e);
@@ -306,7 +351,7 @@ public class JdbcSagaStore implements SagaStore {
 
     @Override
     public int deleteFinishedBefore(Instant olderThan) {
-        // two autocommit statements, children first: if the second fails the sagas simply survive
+        // autocommit statements, children first: if a later one fails the sagas simply survive
         // one more pass and the next sweep finishes the job
         try (Connection connection = dataSource.getConnection()) {
             try (PreparedStatement confirmations = connection.prepareStatement(
@@ -315,6 +360,15 @@ public class JdbcSagaStore implements SagaStore {
                             + "AND outcome_announced = TRUE AND updated_at < ?)")) {
                 confirmations.setTimestamp(1, Timestamp.from(olderThan));
                 confirmations.executeUpdate();
+            }
+            // the joining facts go with their saga (V8), same window: the fact ids of a saga this
+            // service has forgotten point at nothing worth finding
+            try (PreparedStatement joiningFacts = connection.prepareStatement(
+                    "DELETE FROM offboarding_saga_facts WHERE saga_id IN "
+                            + "(SELECT id FROM offboarding_sagas WHERE state IN ('COMPLETED', 'COMPENSATED') "
+                            + "AND outcome_announced = TRUE AND updated_at < ?)")) {
+                joiningFacts.setTimestamp(1, Timestamp.from(olderThan));
+                joiningFacts.executeUpdate();
             }
             try (PreparedStatement sagas = connection.prepareStatement(
                     "DELETE FROM offboarding_sagas WHERE state IN ('COMPLETED', 'COMPENSATED') "

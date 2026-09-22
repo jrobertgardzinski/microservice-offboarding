@@ -87,6 +87,15 @@ public class EventsRouter {
     static final int MAX_POLICY_BYTES = 8 * 1024;
 
     /**
+     * The retry counter's address: the saga to charge, and the count the sweep offered the
+     * candidate at. Both, because the charge is conditional on the round it pays for — two
+     * sweepers holding the same overdue saga must not buy two retries with one re-command (see
+     * {@link com.jrobertgardzinski.offboarding.system.SagaStore#retryDelivered}).
+     */
+    public record RetryCharge(UUID sagaId, int retriesSoFar) {
+    }
+
+    /**
      * An event to publish: the loop adds the correlation-id header and sends. When the event is a
      * saga's outcome, {@code announcesSaga} names it so the loop can mark the outbox after a
      * successful flush; when it is the sweeper RE-commanding an overdue purge,
@@ -95,7 +104,7 @@ public class EventsRouter {
      * Everything else leaves both null.
      */
     public record Outgoing(Destination destination, String key, String payload, UUID announcesSaga,
-                           UUID countsRetryFor, UUID partOfSaga) {
+                           RetryCharge countsRetryFor, UUID partOfSaga) {
         public Outgoing(Destination destination, String key, String payload) {
             this(destination, key, payload, null, null, null);
         }
@@ -105,9 +114,10 @@ public class EventsRouter {
         }
 
         public Outgoing(Destination destination, String key, String payload, UUID announcesSaga,
-                        UUID countsRetryFor) {
+                        RetryCharge countsRetryFor) {
             this(destination, key, payload, announcesSaga, countsRetryFor,
-                    announcesSaga != null ? announcesSaga : countsRetryFor);
+                    announcesSaga != null ? announcesSaga
+                            : countsRetryFor == null ? null : countsRetryFor.sagaId());
         }
 
         /**
@@ -203,7 +213,7 @@ public class EventsRouter {
             // the retry counter only once this command is proven delivered — an undeliverable
             // re-command burns nothing and the next sweep simply offers the candidate again
             out.add(purgeRetryCommand(retry.sagaId(), retry.email(), retry.policy(),
-                    retry.initiatedBy()));
+                    retry.initiatedBy(), retry.retriesSoFar()));
         }
         for (Compensated failed : swept.compensated()) {
             LOG.warn("portal purge overdue for {} despite the retries; compensating and announcing "
@@ -287,12 +297,15 @@ public class EventsRouter {
                 initiatedBy, Instant.now(clock));
         if (begun.nothingToPurge()) {
             if (!begun.completedNow()) {
-                // the once-latch said no: this fact is a replay and the saga finished long ago.
-                // Announcing again would put a second verdict on the wire for a settled case —
-                // whatever it still owes is the outbox's business (unannouncedOutcomes), not this
-                // fact's
-                LOG.info("replayed deletion fact for {}: nothing to purge and the saga is already"
-                        + " finished; no second announcement (saga {})", Masked.address(email), begun.sagaId());
+                // the once-latch said no, and there are two ways it can: the fact is a replay and
+                // the saga finished long ago, or the saga this fact joined recorded a quorum this
+                // participant-less configuration has no business declaring reached. Either way
+                // nothing is announced here — a settled case owes at most a re-publication, which
+                // is the outbox's business (unannouncedOutcomes), and a case still collecting is
+                // the sweeper's
+                LOG.info("deletion fact for {}: nothing to purge here, and this saga is not this"
+                        + " call's to complete; no announcement (saga {})", Masked.address(email),
+                        begun.sagaId());
                 return List.of();
             }
             LOG.info("no content participants configured; portal instantly clean for {}", Masked.address(email));
@@ -389,11 +402,11 @@ public class EventsRouter {
      * only after the broker demonstrably accepted it.
      */
     private Outgoing purgeRetryCommand(UUID sagaId, String email, String storedPolicy,
-                                       String initiatedBy) {
+                                       String initiatedBy, int retriesSoFar) {
         return new Outgoing(Destination.PARTICIPANTS, email,
                 commandPayload(MARK_COMMAND, sagaId, email, storedPolicy(sagaId, storedPolicy),
                         initiatedBy),
-                null, sagaId);
+                null, new RetryCharge(sagaId, retriesSoFar));
     }
 
     /** The stored policy back into the node {@link #commandPayload} ferries; null stays null. */

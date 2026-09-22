@@ -62,6 +62,7 @@ class JdbcSagaStoreTest {
         try (Connection connection = dataSource.getConnection();
              Statement statement = connection.createStatement()) {
             statement.executeUpdate("DELETE FROM offboarding_confirmations");
+            statement.executeUpdate("DELETE FROM offboarding_saga_facts");
             statement.executeUpdate("DELETE FROM offboarding_sagas");
         }
     }
@@ -70,7 +71,7 @@ class JdbcSagaStoreTest {
     void a_replayed_fact_finds_its_saga_even_after_completion() {
         UUID fact = UUID.randomUUID();
         UUID first = store.start(fact, "alice@example.com", T0);
-        store.complete("alice@example.com", T0);
+        store.complete(first, T0);
         UUID replayed = store.start(fact, "alice@example.com", T0.plusSeconds(5));
         assertEquals(first, replayed, "a replayed fact must not fork a second saga");
     }
@@ -289,7 +290,7 @@ class JdbcSagaStoreTest {
     @Test
     void a_confirmation_echoing_a_finished_saga_is_a_stray_and_never_touches_a_newer_one() {
         UUID finished = store.start(UUID.randomUUID(), "alice@example.com", T0);
-        store.complete("alice@example.com", T0);
+        store.complete(finished, T0);
         assertTrue(store.confirm("alice@example.com", finished, "memes", THREE, T0).isEmpty(),
                 "an echo of a finished saga is a stray, recorded nowhere");
         UUID second = store.start(UUID.randomUUID(), "alice@example.com", T0.plusSeconds(10));
@@ -310,9 +311,71 @@ class JdbcSagaStoreTest {
 
     @Test
     void an_empty_required_set_completes_via_complete() {
-        store.start(UUID.randomUUID(), "alice@example.com", T0);
-        assertTrue(store.complete("alice@example.com", T0));
-        assertFalse(store.complete("alice@example.com", T0), "already completed");
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        assertTrue(store.complete(saga, T0));
+        assertFalse(store.complete(saga, T0), "already completed");
+    }
+
+    @Test
+    void a_case_that_recorded_a_quorum_is_never_completed_by_a_caller_with_no_participants() {
+        // THE finding this pins. complete() is the "nobody to wait for" door, and it used to be
+        // addressed by EMAIL and guarded by nothing: a pod that came up with an empty participant
+        // set (a blank variable, a rehearsal deployment) flipped STARTED -> COMPLETED on a case
+        // opened with three participants and zero confirmations on file. The portal then announced
+        // the content purged, security deleted the account, no closure was ever commanded — and
+        // the content already MARKED stayed hidden-but-stored for ever with no saga left to notice
+        UUID saga = store.start(new Opening(UUID.randomUUID(), "alice@example.com", null, null,
+                THREE), T0);
+
+        assertFalse(store.complete(saga, T0.plusSeconds(5)),
+                "a saga that recorded a quorum of three may not be completed by a caller that"
+                        + " waits for nobody — that is the V6 rule, through the other door");
+
+        Recorded landed = store.confirm("alice@example.com", saga, "memes", THREE,
+                T0.plusSeconds(6)).orElseThrow();
+        assertFalse(landed.completedSaga(),
+                "and the case is still collecting: one of its three confirmations lands as usual");
+    }
+
+    @Test
+    void a_fact_that_joined_a_running_saga_finds_it_again_after_the_case_finished() {
+        // THE finding this pins. Only the OPENING fact was ever written down (V1's unique
+        // fact_id); a fact that joined the running saga was answered with its id and forgotten.
+        // Once the case finished, running_email went NULL and both lookups missed — so a
+        // redelivery of that fact (routine: the pass that handled it may have failed its flush and
+        // been rewound) opened a SECOND saga and re-ran the whole purge, erasing the content of an
+        // account whose compensation had just given it back
+        UUID joining = UUID.randomUUID();
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        assertEquals(saga, store.start(joining, "alice@example.com", T0.plusSeconds(5)),
+                "one running saga per account");
+
+        store.complete(saga, T0.plusSeconds(10));   // the case finishes; running_email goes NULL
+
+        assertEquals(saga, store.start(joining, "alice@example.com", T0.plusSeconds(20)),
+                "the redelivered joining fact must find the saga it JOINED — forking a second one"
+                        + " would command the purge all over again");
+    }
+
+    @Test
+    void two_sweepers_holding_the_same_candidate_charge_one_retry_between_them() throws Exception {
+        // the rolling-deploy race: the overdue SELECT takes no lock, so the outgoing pod and the
+        // incoming one can both offer saga S at retries = 0 and both report their re-command
+        // delivered. The charge used to be a bare "retries = retries + 1", so the counter went
+        // 0 -> 2 in a round the budget sized for one: two overlapping rounds and the case
+        // capitulates after half the retries it was promised, with nothing to correct the number
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        Retry mine = sweepAt(T0.plusSeconds(TIMEOUT + 1)).retries().get(0);
+        Retry theirs = sweepAt(T0.plusSeconds(TIMEOUT + 2)).retries().get(0);
+        assertEquals(mine.retriesSoFar(), theirs.retriesSoFar(),
+                "both sweepers are holding the SAME round of the same candidate");
+
+        assertTrue(store.retryDelivered(saga, mine.retriesSoFar(), T0.plusSeconds(TIMEOUT + 3)),
+                "the first delivered re-command charges the round it was offered at");
+        assertFalse(store.retryDelivered(saga, theirs.retriesSoFar(), T0.plusSeconds(TIMEOUT + 4)),
+                "the second sweeper's report of the SAME round must buy nothing — the re-command"
+                        + " is free to duplicate, the charge is not");
+        assertEquals(1, retriesInDb(saga), "one round asked for, one retry spent");
     }
 
     @Test
@@ -349,10 +412,12 @@ class JdbcSagaStoreTest {
                             + " the last command — that is the participant's budget");
             Instant due = lastAsked.plusSeconds(TIMEOUT + 1);
             SweepResult swept = sweepAt(due);
-            assertEquals(List.of(new Retry(saga, "alice@example.com")), swept.retries(),
-                    "attempt " + attempt + " re-commands instead of giving up");
+            assertEquals(List.of(new Retry(saga, "alice@example.com", null, null, attempt - 1)),
+                    swept.retries(),
+                    "attempt " + attempt + " re-commands instead of giving up, carrying the retry"
+                            + " count the charge will pay for");
             assertEquals(List.of(), swept.compensated());
-            assertTrue(store.retryDelivered(saga, due),   // the loop's word that the re-command
+            assertTrue(store.retryDelivered(saga, attempt - 1, due),   // the loop's word that the re-command
                     "a delivery against a STARTED saga must report the charge");   // reached Kafka
             lastAsked = due;
         }
@@ -416,7 +481,7 @@ class JdbcSagaStoreTest {
         // does — the caller's. Taking the database's CURRENT_TIMESTAMP instead would put the skew
         // between two clocks straight into the participant's budget
         UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
-        store.retryDelivered(saga, T0.plusSeconds(130));
+        store.retryDelivered(saga, 0, T0.plusSeconds(130));
         assertEquals(T0.plusSeconds(130), updatedAtInDb(saga),
                 "the delivered re-command is activity on the case, stamped when the caller says");
     }
@@ -436,17 +501,17 @@ class JdbcSagaStoreTest {
     @Test
     void a_delivered_retry_is_not_counted_against_a_finished_saga() throws Exception {
         UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
-        store.complete("alice@example.com", T0);
+        store.complete(saga, T0);
         // a late delivery report after completion must be a no-op — and must SAY so (false),
         // because the loop's retries-delivered metric counts only what was actually charged
-        assertFalse(store.retryDelivered(saga, T0.plusSeconds(5)),
+        assertFalse(store.retryDelivered(saga, 0, T0.plusSeconds(5)),
                 "a no-op on a finished saga must not report a charge");
         assertEquals(0, retriesInDb(saga), "a finished saga's counter must stay untouched");
     }
 
     @Test
     void a_delivery_report_for_an_unknown_saga_reports_no_charge() {
-        assertFalse(store.retryDelivered(UUID.randomUUID(), T0),
+        assertFalse(store.retryDelivered(UUID.randomUUID(), 0, T0),
                 "no saga, no charge — the metric must not count deliveries into the void");
     }
 
@@ -506,7 +571,7 @@ class JdbcSagaStoreTest {
         store.markAnnounced(old);
         store.start(UUID.randomUUID(), "running@example.com", T0);
         UUID unannounced = store.start(UUID.randomUUID(), "owing@example.com", T0.plusSeconds(2));
-        store.complete("owing@example.com", T0.plusSeconds(3));
+        store.complete(unannounced, T0.plusSeconds(3));
 
         assertEquals(1, store.deleteFinishedBefore(T0.plusSeconds(60)),
                 "only old + finished + announced goes; " + unannounced + " still owes its outcome");
