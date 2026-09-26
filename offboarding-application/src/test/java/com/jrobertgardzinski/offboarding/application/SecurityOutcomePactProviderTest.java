@@ -71,7 +71,7 @@ class SecurityOutcomePactProviderTest {
         fixture.router.handle(Source.SECURITY,
                 "{\"id\":\"" + UUID.randomUUID() + "\",\"sagaId\":\"" + UUID.randomUUID() + "\","
                         + "\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                        + "\"email\":\"leaver@example.com\",\"version\":1}");
+                        + "\"email\":\"leaver@example.com\",\"userId\":\"" + RouterFixture.idOf("leaver@example.com") + "\",\"version\":1}");
         fixture.router.handle(Source.participant("memes"), confirmation());
         fixture.router.handle(Source.participant("comments"), confirmation());
         // the completing confirmation emits the CLOSURE command first and the verdict second;
@@ -98,6 +98,6 @@ class SecurityOutcomePactProviderTest {
     }
 
     private static String confirmation() {
-        return "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"leaver@example.com\",\"version\":1}";
+        return "{\"type\":\"USER_CONTENT_PURGED\",\"userId\":\"" + RouterFixture.idOf("leaver@example.com") + "\",\"version\":1}";
     }
 }

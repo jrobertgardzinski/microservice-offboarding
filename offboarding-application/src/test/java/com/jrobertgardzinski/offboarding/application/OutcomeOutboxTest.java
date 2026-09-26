@@ -68,9 +68,9 @@ class OutcomeOutboxTest {
 
     private UUID completeASaga() {
         router.handle(Source.SECURITY, "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                + "\"email\":\"leaver@example.com\",\"version\":1}");
+                + "\"email\":\"leaver@example.com\",\"userId\":\"" + RouterFixture.idOf("leaver@example.com") + "\",\"version\":1}");
         List<EventsRouter.Outgoing> outcome = router.handle(Source.participant("memes"),
-                "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"leaver@example.com\",\"version\":1}");
+                "{\"type\":\"USER_CONTENT_PURGED\",\"userId\":\"" + RouterFixture.idOf("leaver@example.com") + "\",\"version\":1}");
         // two events, in this order: the CLOSURE that lets the participants erase for real, then
         // the single verdict security waits for. The mark was reversible up to this instant
         assertEquals(2, outcome.size(), "the completing confirmation closes the saga and announces it");
@@ -124,7 +124,7 @@ class OutcomeOutboxTest {
                 new ObjectMapper(), Clock.fixed(now, ZoneOffset.UTC));
         List<EventsRouter.Outgoing> out = bare.handle(Source.SECURITY,
                 "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                        + "\"email\":\"leaver@example.com\",\"version\":1}");
+                        + "\"email\":\"leaver@example.com\",\"userId\":\"" + RouterFixture.idOf("leaver@example.com") + "\",\"version\":1}");
         assertEquals(store.all().get(0).id, out.get(0).announcesSaga(),
                 "even the no-participants shortcut owes its announced mark to the outbox");
     }

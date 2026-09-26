@@ -147,20 +147,20 @@ public class JdbcSagaStore implements SagaStore {
     }
 
     @Override
-    public Optional<Recorded> confirm(String email, UUID sagaId, String participant,
+    public Optional<Recorded> confirm(UUID userId, UUID sagaId, String participant,
                                       Set<String> required, Instant at) {
         try (Connection connection = dataSource.getConnection()) {
             // fresh confirmations echo the saga id the command carried — the precise address,
             // and the FINAL word: a sagaId whose saga is no longer STARTED is a stray from a
             // closed case, treated like a confirmation for an unknown saga. It must NOT fall
-            // back to the email lookup — that would let an echo of a finished case land on a
-            // NEWER saga for the same account. The email fallback exists solely for
-            // confirmations without the sagaId field (old producers).
+            // back to the lookup by leaver — that would let an echo of a finished case land on a
+            // NEWER saga for the same account. That fallback exists solely for confirmations
+            // without the sagaId field (old producers).
             Optional<Target> target;
             if (sagaId != null) {
                 target = startedSaga(connection, sagaId);
             } else {
-                target = runningSaga(connection, email);
+                target = runningSagaOfUser(connection, userId);
             }
             if (target.isEmpty()) {
                 return Optional.empty();   // a stray — no saga is waiting for this
@@ -188,7 +188,8 @@ public class JdbcSagaStore implements SagaStore {
             // the policy rides back out with the completing confirmation: it is what the closure
             // command carries, and this is the moment the closure is sent
             return Optional.of(new Recorded(saga, target.get().securitySagaId(), completed,
-                    target.get().policy(), target.get().initiatedBy(), target.get().userId()));
+                    target.get().policy(), target.get().initiatedBy(), target.get().userId(),
+                    target.get().email()));
         } catch (SQLException e) {
             throw new IllegalStateException("could not record purge confirmation", e);
         }
@@ -393,14 +394,29 @@ public class JdbcSagaStore implements SagaStore {
      * the closure was requested under (V7), which decides whether that rule may be honoured.
      */
     private record Target(UUID id, Optional<Set<String>> recordedParticipants,
-                          UUID securitySagaId, String policy, String initiatedBy, UUID userId) {
+                          UUID securitySagaId, String policy, String initiatedBy, UUID userId,
+                          String email) {
+    }
+
+    /** The running saga of one leaver, by id — a confirmation without a saga id lands here. */
+    private static Optional<Target> runningSagaOfUser(Connection connection, UUID userId) throws SQLException {
+        if (userId == null) {
+            return Optional.empty();
+        }
+        try (PreparedStatement select = connection.prepareStatement(
+                "SELECT id, required_participants, security_saga_id, policy, initiated_by, user_id, email "
+                        + "FROM offboarding_sagas "
+                        + "WHERE user_id = ? AND state = 'STARTED'")) {
+            select.setObject(1, userId);
+            return target(select);
+        }
     }
 
     private static Optional<Target> runningSaga(Connection connection, String email) throws SQLException {
         // running_email is the V2 latch column: set while STARTED, NULL after — so this is both
         // the lookup and the uniqueness the constraint enforces
         try (PreparedStatement select = connection.prepareStatement(
-                "SELECT id, required_participants, security_saga_id, policy, initiated_by, user_id "
+                "SELECT id, required_participants, security_saga_id, policy, initiated_by, user_id, email "
                         + "FROM offboarding_sagas "
                         + "WHERE running_email = ?")) {
             select.setString(1, email);
@@ -410,7 +426,7 @@ public class JdbcSagaStore implements SagaStore {
 
     private static Optional<Target> startedSaga(Connection connection, UUID sagaId) throws SQLException {
         try (PreparedStatement select = connection.prepareStatement(
-                "SELECT id, required_participants, security_saga_id, policy, initiated_by, user_id "
+                "SELECT id, required_participants, security_saga_id, policy, initiated_by, user_id, email "
                         + "FROM offboarding_sagas "
                         + "WHERE id = ? AND state = 'STARTED'")) {
             select.setObject(1, sagaId);
@@ -423,7 +439,7 @@ public class JdbcSagaStore implements SagaStore {
             return rows.next()
                     ? Optional.of(new Target(rows.getObject(1, UUID.class),
                     parsed(rows.getString(2)), rows.getObject(3, UUID.class), rows.getString(4),
-                    rows.getString(5), rows.getObject(6, UUID.class)))
+                    rows.getString(5), rows.getObject(6, UUID.class), rows.getString(7)))
                     : Optional.empty();
         }
     }

@@ -48,7 +48,12 @@ public interface SagaStore {
 
     /** Start without policy choices — the pre-policy spelling, kept for callers and tests. */
     default UUID start(UUID factId, String email, Instant at) {
-        return start(factId, email, null, at);
+        return start(factId, email, (String) null, at);
+    }
+
+    /** Test seeding: a saga that knows its leaver's id. */
+    default UUID start(UUID factId, String email, UUID userId, Instant at) {
+        return start(new Opening(factId, email, null, null, null, null, userId), at);
     }
 
     /**
@@ -60,7 +65,11 @@ public interface SagaStore {
      * a saga that recorded one is judged against THAT set, so re-configuring the participants can
      * never change the completeness criterion of a case already under way.
      */
-    Optional<Recorded> confirm(String email, UUID sagaId, String participant, Set<String> required,
+    /**
+     * Records one participant's confirmation. {@code sagaId} is the precise address; a confirmation
+     * without one lands on the running saga of {@code userId}.
+     */
+    Optional<Recorded> confirm(UUID userId, UUID sagaId, String participant, Set<String> required,
                                Instant at);
 
     /**

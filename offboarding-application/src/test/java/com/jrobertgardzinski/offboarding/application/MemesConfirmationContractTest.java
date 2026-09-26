@@ -41,7 +41,7 @@ class MemesConfirmationContractTest {
         return builder.expectsToReceive("a user content purged confirmation")
                 .withContent(new PactDslJsonBody()
                         .stringValue("type", "USER_CONTENT_PURGED")
-                        .stringType("email", "leaver@example.com")
+                        .uuid("userId")
                         // the saga id the purge command carried, echoed back — how a confirmation
                         // addresses its saga without leaning on the email
                         .uuid("sagaId"))

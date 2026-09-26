@@ -36,7 +36,7 @@ class EventsRouterPolicyCapTest {
         RouterFixture fixture = RouterFixture.router();
         String blob = "x".repeat(EventsRouter.MAX_POLICY_BYTES + 1);
         String fact = "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                + "\"email\":\"alice@example.com\",\"version\":1,\"policy\":{\"note\":\"" + blob + "\"}}";
+                + "\"email\":\"alice@example.com\",\"userId\":\"" + RouterFixture.idOf("alice@example.com") + "\",\"version\":1,\"policy\":{\"note\":\"" + blob + "\"}}";
 
         List<EventsRouter.Outgoing> out = fixture.router.handle(Source.SECURITY, fact);
 
@@ -59,7 +59,7 @@ class EventsRouterPolicyCapTest {
     void a_policy_within_the_cap_still_rides_and_is_stored_verbatim() throws Exception {
         RouterFixture fixture = RouterFixture.router();
         String fact = "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                + "\"email\":\"alice@example.com\",\"version\":1,"
+                + "\"email\":\"alice@example.com\",\"userId\":\"" + RouterFixture.idOf("alice@example.com") + "\",\"version\":1,"
                 + "\"policy\":{\"memes\":\"DELETE_ALL\"}}";
 
         List<EventsRouter.Outgoing> out = fixture.router.handle(Source.SECURITY, fact);
@@ -82,7 +82,7 @@ class EventsRouterPolicyCapTest {
         assertTrue(multiByte.length() < EventsRouter.MAX_POLICY_BYTES);
         assertTrue(multiByte.getBytes(StandardCharsets.UTF_8).length > EventsRouter.MAX_POLICY_BYTES);
         String fact = "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                + "\"email\":\"alice@example.com\",\"version\":1,\"policy\":{\"note\":\""
+                + "\"email\":\"alice@example.com\",\"userId\":\"" + RouterFixture.idOf("alice@example.com") + "\",\"version\":1,\"policy\":{\"note\":\""
                 + multiByte + "\"}}";
 
         List<EventsRouter.Outgoing> out = fixture.router.handle(Source.SECURITY, fact);

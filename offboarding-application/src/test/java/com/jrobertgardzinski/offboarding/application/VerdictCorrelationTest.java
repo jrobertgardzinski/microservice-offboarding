@@ -84,7 +84,7 @@ class VerdictCorrelationTest {
         UUID securitySaga = UUID.randomUUID();
         router.handle(Source.SECURITY, fact(UUID.randomUUID(), securitySaga));
         List<EventsRouter.Outgoing> out = router.handle(Source.participant("memes"),
-                "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + LEAVER + "\",\"version\":1}");
+                "{\"type\":\"USER_CONTENT_PURGED\",\"userId\":\"" + RouterFixture.idOf(LEAVER) + "\",\"version\":1}");
         // onOutcomes, not get(0): the completing confirmation now emits the CLOSURE command first
         // and the verdict second — the correlation belongs to the verdict
         assertEquals(securitySaga.toString(), payload(onOutcomes(out)).path("sagaId").asText(),
@@ -136,10 +136,10 @@ class VerdictCorrelationTest {
     void a_fact_without_a_handle_still_opens_a_saga_and_its_verdict_carries_none() throws Exception {
         // an older producer: correlation is defence in depth, not a precondition for deleting
         router.handle(Source.SECURITY, "{\"id\":\"" + UUID.randomUUID() + "\","
-                + "\"type\":\"ACCOUNT_DELETION_REQUESTED\",\"email\":\"" + LEAVER
+                + "\"type\":\"ACCOUNT_DELETION_REQUESTED\",\"email\":\"" + LEAVER + "\",\"userId\":\"" + RouterFixture.idOf(LEAVER)
                 + "\",\"version\":1}");
         List<EventsRouter.Outgoing> out = router.handle(Source.participant("memes"),
-                "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + LEAVER + "\",\"version\":1}");
+                "{\"type\":\"USER_CONTENT_PURGED\",\"userId\":\"" + RouterFixture.idOf(LEAVER) + "\",\"version\":1}");
         assertFalse(payload(onOutcomes(out)).has("sagaId"),
                 "no handle to echo means no field — never an invented one");
     }
@@ -150,7 +150,7 @@ class VerdictCorrelationTest {
         // timeout then restores the account and apologises for content that is already gone
         assertEquals(List.of(), router.handle(Source.SECURITY, "{\"id\":\"" + UUID.randomUUID() + "\","
                 + "\"sagaId\":\"not-a-uuid\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                + "\"email\":\"" + LEAVER + "\",\"version\":1}"));
+                + "\"email\":\"" + LEAVER + "\",\"userId\":\"" + RouterFixture.idOf(LEAVER) + "\",\"version\":1}"));
         assertTrue(store.all().isEmpty(), "and no saga may open");
     }
 
@@ -173,7 +173,7 @@ class VerdictCorrelationTest {
 
     private static String fact(UUID factId, UUID securitySagaId) {
         return "{\"id\":\"" + factId + "\",\"sagaId\":\"" + securitySagaId + "\","
-                + "\"type\":\"ACCOUNT_DELETION_REQUESTED\",\"email\":\"" + LEAVER
+                + "\"type\":\"ACCOUNT_DELETION_REQUESTED\",\"email\":\"" + LEAVER + "\",\"userId\":\"" + RouterFixture.idOf(LEAVER)
                 + "\",\"version\":1}";
     }
 

@@ -53,8 +53,13 @@ public final class RouterFixture {
     }
 
     /** Seed a running saga so a confirmation has something to confirm. */
+    /** The id security minted for an address: the tests speak in addresses, the saga in ids. */
+    public static UUID idOf(String email) {
+        return UUID.nameUUIDFromBytes(("user:" + email).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
     RouterFixture withRunningSagaFor(String email) {
-        store.start(UUID.randomUUID(), email, Instant.parse("2026-07-11T11:59:00Z"));
+        store.start(UUID.randomUUID(), email, idOf(email), Instant.parse("2026-07-11T11:59:00Z"));
         return this;
     }
 
@@ -64,13 +69,13 @@ public final class RouterFixture {
      * id the seeded saga actually has.
      */
     RouterFixture withRunningSaga(UUID sagaId, String email) {
-        store.startWithId(sagaId, UUID.randomUUID(), email, Instant.parse("2026-07-11T11:59:00Z"));
+        store.startWithId(sagaId, UUID.randomUUID(), email, idOf(email), Instant.parse("2026-07-11T11:59:00Z"));
         return this;
     }
 
     /** A running saga carrying security's handle — what the verdict has to echo. */
     RouterFixture withRunningSagaFor(String email, UUID securitySagaId) {
-        store.startWithId(UUID.randomUUID(), UUID.randomUUID(), email, securitySagaId,
+        store.startWithId(UUID.randomUUID(), UUID.randomUUID(), email, idOf(email), securitySagaId,
                 Instant.parse("2026-07-11T11:59:00Z"));
         return this;
     }

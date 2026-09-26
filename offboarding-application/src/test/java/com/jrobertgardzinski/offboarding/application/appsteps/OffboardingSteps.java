@@ -94,7 +94,7 @@ public class OffboardingSteps {
     public void deletionRequested(String email) {
         announced.addAll(router.handle(Source.SECURITY,
                 "{\"id\":\"" + factId(email) + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                        + "\"email\":\"" + email + "\",\"version\":1}"));
+                        + "\"email\":\"" + email + "\",\"userId\":\"" + idOf(email) + "\",\"version\":1}"));
     }
 
     @Given("security announced that {word} requested deletion choosing memes={word} and comments={word}")
@@ -102,7 +102,7 @@ public class OffboardingSteps {
     public void deletionRequestedWithPolicy(String email, String memesRule, String commentsRule) {
         announced.addAll(router.handle(Source.SECURITY,
                 "{\"id\":\"" + factId(email) + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                        + "\"email\":\"" + email + "\","
+                        + "\"email\":\"" + email + "\",\"userId\":\"" + idOf(email) + "\","
                         + "\"policy\":{\"memes\":\"" + memesRule + "\",\"comments\":\"" + commentsRule + "\"},"
                         + "\"version\":1}"));
     }
@@ -111,12 +111,16 @@ public class OffboardingSteps {
         return java.util.UUID.nameUUIDFromBytes(("fact:" + email).getBytes());
     }
 
+    private static String idOf(String email) {
+        return com.jrobertgardzinski.offboarding.application.RouterFixture.idOf(email).toString();
+    }
+
     @When("security announces another deletion request for {word}")
     public void anotherDeletionRequested(String email) {
         // a genuinely new fact — a fresh id, not a replay of the first announcement
         announced.addAll(router.handle(Source.SECURITY,
                 "{\"id\":\"" + java.util.UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                        + "\"email\":\"" + email + "\",\"version\":1}"));
+                        + "\"email\":\"" + email + "\",\"userId\":\"" + idOf(email) + "\",\"version\":1}"));
     }
 
     @When("security replays the deletion FACT for {word}")
@@ -142,7 +146,7 @@ public class OffboardingSteps {
     @When("{word} confirms its PURGE for {word}")
     public void participantConfirms(String participant, String email) {
         announced.addAll(router.handle(Source.participant(participant),
-                "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + email + "\",\"version\":1}"));
+                "{\"type\":\"USER_CONTENT_PURGED\",\"userId\":\"" + idOf(email) + "\",\"version\":1}"));
     }
 
     @When("{word} confirms its PURGE for {word} echoing the PURGE command")
@@ -162,7 +166,7 @@ public class OffboardingSteps {
 
     private void confirmEchoing(String participant, String email, String sagaId) {
         announced.addAll(router.handle(Source.participant(participant),
-                "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"" + email + "\","
+                "{\"type\":\"USER_CONTENT_PURGED\",\"userId\":\"" + idOf(email) + "\","
                         + "\"sagaId\":\"" + sagaId + "\",\"version\":1}"));
     }
 
@@ -246,7 +250,7 @@ public class OffboardingSteps {
     public void purgeCommandWentOut(String email) {
         JsonNode command = onlyOn(Destination.PARTICIPANTS);
         assertEquals("PURGE_USER_CONTENT", command.path("type").asText());
-        assertEquals(email, command.path("email").asText());
+        assertEquals(idOf(email), command.path("userId").asText(), "the command names the leaver by id");
         assertTrue(command.hasNonNull("sagaId"), "participants confirm by saga");
     }
 
@@ -275,7 +279,7 @@ public class OffboardingSteps {
     @Then("the portal commands the ERASURE of the content of {word}")
     public void erasureCommanded(String email) {
         JsonNode command = onlyCommandOfType(EventsRouter.ERASE_COMMAND);
-        assertEquals(email, command.path("email").asText());
+        assertEquals(idOf(email), command.path("userId").asText(), "the command names the leaver by id");
         assertTrue(command.hasNonNull("sagaId"),
                 "the closure names the case it closes, like every other command of this saga");
     }
@@ -292,7 +296,7 @@ public class OffboardingSteps {
     @Then("the portal commands the RESTORE of the content of {word}")
     public void restoreCommanded(String email) {
         JsonNode command = onlyCommandOfType(EventsRouter.RESTORE_COMMAND);
-        assertEquals(email, command.path("email").asText());
+        assertEquals(idOf(email), command.path("userId").asText(), "the command names the leaver by id");
         assertTrue(command.path("policy").isMissingNode() || command.path("policy").isNull(),
                 "putting content back needs no policy: " + command);
     }
@@ -332,7 +336,7 @@ public class OffboardingSteps {
         assertEquals(2, commands.size(), "the original command and exactly one re-send");
         for (JsonNode command : commands) {
             assertEquals("PURGE_USER_CONTENT", command.path("type").asText());
-            assertEquals(email, command.path("email").asText());
+            assertEquals(idOf(email), command.path("userId").asText(), "the command names the leaver by id");
         }
         assertEquals(commands.get(0).path("sagaId").asText(), commands.get(1).path("sagaId").asText(),
                 "the re-send commands the SAME saga, not a fork");
@@ -347,7 +351,7 @@ public class OffboardingSteps {
                 .toList();
         assertEquals(2, commands.size(), "the command of the finished case and the fresh one");
         for (JsonNode command : commands) {
-            assertEquals(email, command.path("email").asText());
+            assertEquals(idOf(email), command.path("userId").asText(), "the command names the leaver by id");
         }
         assertNotEquals(commands.get(0).path("sagaId").asText(), commands.get(1).path("sagaId").asText(),
                 "past retention the portal remembers nothing: the replayed fact opens a NEW case");

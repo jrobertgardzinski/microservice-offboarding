@@ -187,8 +187,8 @@ class KafkaLoopIntegrationTest {
         // the crash in the bad window: the saga finished, the outcome never reached the broker —
         // seeded straight into the store, aged past the republish grace
         Instant past = Instant.now().minusSeconds(300);
-        UUID sagaId = store.start(UUID.randomUUID(), email, past);
-        store.confirm(email, sagaId, "memes", Set.of("memes"), past);
+        UUID sagaId = store.start(UUID.randomUUID(), email, idOf(email), past);
+        store.confirm(null, sagaId, "memes", Set.of("memes"), past);   // by saga id: the precise address
         assertEquals("COMPLETED", sagaState(email));
         assertFalse(announced(email), "the seed must model the crash BEFORE the announced mark");
 
@@ -223,7 +223,7 @@ class KafkaLoopIntegrationTest {
         // a fact whose id can never be a replay key, then a good one right behind it
         produce(facts, poisonEmail, "{\"id\":\"definitely-not-a-uuid\","
                 + "\"type\":\"ACCOUNT_DELETION_REQUESTED\",\"email\":\"" + poisonEmail
-                + "\",\"version\":1}");
+                + "\",\"userId\":\"" + idOf(poisonEmail) + "\",\"version\":1}");
         produce(facts, emailA, deletionFact(UUID.randomUUID(), emailA, ""));
 
         readMatching(SagaTopics.CONTENT_COMMANDS, Set.of(emailA), 1, GENEROUS, Duration.ZERO);
@@ -308,7 +308,7 @@ class KafkaLoopIntegrationTest {
         String memesTopic = "memes-events-" + run;
         createTopics(facts, memesTopic, SagaTopics.CONTENT_COMMANDS, SagaTopics.OFFBOARDING_EVENTS);
         // a saga already long overdue when the loop wakes up — the sweeper's case from sweep one
-        store.start(UUID.randomUUID(), email, Instant.now().minusSeconds(600));
+        store.start(UUID.randomUUID(), email, idOf(email), Instant.now().minusSeconds(600));
         long meteredBefore = retriesDeliveredMetric();
         try {
             // the commands topic rejects EVERY send (RecordTooLarge — the same deterministic
@@ -474,7 +474,7 @@ class KafkaLoopIntegrationTest {
         // an overdue saga: every sweep re-commands it, so the sweeper actually SENDS into the
         // dead air — the exact iteration a default-config producer would hold for max.block 60s
         // / delivery.timeout 120s, outlasting the /alive tolerance and faking a dead thread
-        store.start(UUID.randomUUID(), email, Instant.now().minusSeconds(600));
+        store.start(UUID.randomUUID(), email, idOf(email), Instant.now().minusSeconds(600));
 
         // nothing listens on port 1; the test seam shrinks the delivery clocks (2s instead of
         // the production 30s) so the proof runs in seconds while keeping the same shape:
@@ -560,7 +560,7 @@ class KafkaLoopIntegrationTest {
         // none to propagate and sent nothing — so a re-command, a capitulation and every
         // re-announcement were untraceable exactly when an operator is looking for them
         // start() takes the FACT id and hands back the saga's own id — the one the header names
-        UUID sagaId = store.start(UUID.randomUUID(), email, Instant.now().minusSeconds(600));
+        UUID sagaId = store.start(UUID.randomUUID(), email, idOf(email), Instant.now().minusSeconds(600));
 
         startLoop(store, facts, Map.of(), Duration.ofMillis(300),
                 new SweepOverdue(store, Duration.ofMinutes(5)));
@@ -630,14 +630,19 @@ class KafkaLoopIntegrationTest {
         testProducer.send(new ProducerRecord<>(topic, key, value)).get(10, TimeUnit.SECONDS);
     }
 
+    /** The id security minted for an address: the test speaks in addresses, the saga in ids. */
+    private static UUID idOf(String email) {
+        return UUID.nameUUIDFromBytes(("user:" + email).getBytes(StandardCharsets.UTF_8));
+    }
+
     private static String deletionFact(UUID factId, String email, String extraJson) {
         return "{\"id\":\"" + factId + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\",\"email\":\""
-                + email + "\",\"version\":1" + extraJson + "}";
+                + email + "\",\"userId\":\"" + idOf(email) + "\",\"version\":1" + extraJson + "}";
     }
 
     private static String confirmation(String email, UUID sagaId) {
-        return "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"USER_CONTENT_PURGED\",\"email\":\""
-                + email + "\",\"sagaId\":\"" + sagaId + "\",\"version\":1}";
+        return "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"USER_CONTENT_PURGED\",\"userId\":\""
+                + idOf(email) + "\",\"sagaId\":\"" + sagaId + "\",\"version\":1}";
     }
 
     /**
@@ -683,7 +688,9 @@ class KafkaLoopIntegrationTest {
                     && System.currentTimeMillis() < settledAt) {
                 for (ConsumerRecord<String, String> record : probe.poll(Duration.ofMillis(200))) {
                     JsonNode event = MAPPER.readTree(record.value());
-                    if (emails.contains(event.path("email").asText())) {
+                    // a command names the leaver by id, an outcome by address: match either
+                    if (emails.contains(event.path("email").asText())
+                            || emails.stream().anyMatch(e -> idOf(e).toString().equals(event.path("userId").asText()))) {
                         matches.add(record);
                         settledAt = Long.MAX_VALUE;   // a new match restarts the settle window
                     }
@@ -798,9 +805,9 @@ class KafkaLoopIntegrationTest {
         }
 
         @Override
-        public java.util.Optional<Recorded> confirm(String email, UUID sagaId, String participant,
+        public java.util.Optional<Recorded> confirm(UUID userId, UUID sagaId, String participant,
                                                     Set<String> required, Instant at) {
-            return inner.confirm(email, sagaId, participant, required, at);
+            return inner.confirm(userId, sagaId, participant, required, at);
         }
 
         @Override

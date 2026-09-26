@@ -81,7 +81,7 @@ class ObservabilityIsOptionalTest {
         List<EventsRouter.Outgoing> out = unwatched.router.handle(Source.SECURITY,
                 "{\"id\":\"" + java.util.UUID.randomUUID() + "\","
                         + "\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                        + "\"email\":\"leaver@example.com\",\"version\":1}");
+                        + "\"email\":\"leaver@example.com\",\"userId\":\"" + java.util.UUID.nameUUIDFromBytes("user:leaver@example.com".getBytes()) + "\",\"version\":1}");
 
         assertEquals(1, out.size());
         assertEquals(Destination.PARTICIPANTS, out.getFirst().destination());

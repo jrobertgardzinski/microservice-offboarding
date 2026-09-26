@@ -24,8 +24,8 @@ public class RecordConfirmation {
         this.participants = participants;
     }
 
-    public Optional<Recorded> execute(String email, UUID sagaId, String participant,
+    public Optional<Recorded> execute(UUID userId, UUID sagaId, String participant,
                                                 Instant at) {
-        return sagas.confirm(email, sagaId, participant, participants, at);
+        return sagas.confirm(userId, sagaId, participant, participants, at);
     }
 }

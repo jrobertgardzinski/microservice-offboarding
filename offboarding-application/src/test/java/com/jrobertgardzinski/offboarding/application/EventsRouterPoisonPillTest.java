@@ -26,7 +26,7 @@ class EventsRouterPoisonPillTest {
     void a_fact_without_an_id_drops_without_a_saga() {
         RouterFixture fixture = router();
         List<EventsRouter.Outgoing> out = fixture.router.handle(Source.SECURITY,
-                "{\"type\":\"ACCOUNT_DELETION_REQUESTED\",\"email\":\"leaver@example.com\",\"version\":1}");
+                "{\"type\":\"ACCOUNT_DELETION_REQUESTED\",\"userId\":\"" + RouterFixture.idOf("leaver@example.com") + "\",\"version\":1}");
         assertEquals(List.of(), out, "no command may go out for an unreplayable fact");
         assertEquals(List.of(), fixture.store.all(), "and no saga may open");
     }
@@ -36,7 +36,7 @@ class EventsRouterPoisonPillTest {
         RouterFixture fixture = router();
         List<EventsRouter.Outgoing> out = fixture.router.handle(Source.SECURITY,
                 "{\"id\":\"definitely-not-a-uuid\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                        + "\"email\":\"leaver@example.com\",\"version\":1}");
+                        + "\"userId\":\"" + RouterFixture.idOf("leaver@example.com") + "\",\"version\":1}");
         assertEquals(List.of(), out);
         assertEquals(List.of(), fixture.store.all());
     }
@@ -51,7 +51,7 @@ class EventsRouterPoisonPillTest {
     }
 
     @Test
-    void a_confirmation_without_an_email_drops_and_confirms_nothing() {
+    void a_confirmation_without_a_user_id_drops_and_confirms_nothing() {
         RouterFixture fixture = router().withRunningSagaFor("leaver@example.com");
         List<EventsRouter.Outgoing> out = fixture.router.handle(Source.participant("memes"),
                 "{\"type\":\"USER_CONTENT_PURGED\",\"version\":1}");
@@ -61,10 +61,10 @@ class EventsRouterPoisonPillTest {
     }
 
     @Test
-    void a_confirmation_with_a_blank_email_drops_and_confirms_nothing() {
+    void a_confirmation_with_a_blank_user_id_drops_and_confirms_nothing() {
         RouterFixture fixture = router().withRunningSagaFor("leaver@example.com");
         fixture.router.handle(Source.participant("memes"),
-                "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"\",\"version\":1}");
+                "{\"type\":\"USER_CONTENT_PURGED\",\"userId\":\"\",\"version\":1}");
         assertTrue(fixture.store.all().get(0).confirmed.isEmpty());
     }
 
@@ -76,10 +76,10 @@ class EventsRouterPoisonPillTest {
         RouterFixture fixture = router().withRunningSagaFor("leaver@example.com");
         List<EventsRouter.Outgoing> out = fixture.router.handle(Source.participant("memes"),
                 "{\"type\":\"USER_CONTENT_PURGED\",\"sagaId\":\"garbage\","
-                        + "\"email\":\"leaver@example.com\",\"version\":1}");
+                        + "\"userId\":\"" + RouterFixture.idOf("leaver@example.com") + "\",\"version\":1}");
         assertEquals(List.of(), out);
         assertTrue(fixture.store.all().get(0).confirmed.isEmpty(),
-                "a mangled address must not confirm ANY saga, not even the email's running one");
+                "a mangled address must not confirm ANY saga, not even the leaver's running one");
     }
 
     @Test
@@ -90,19 +90,19 @@ class EventsRouterPoisonPillTest {
         RouterFixture fixture = router().withRunningSagaFor("leaver@example.com");
         List<EventsRouter.Outgoing> out = fixture.router.handle(Source.participant("memes"),
                 "{\"type\":\"USER_CONTENT_PURGED\",\"sagaId\":null,"
-                        + "\"email\":\"leaver@example.com\",\"version\":1}");
+                        + "\"userId\":\"" + RouterFixture.idOf("leaver@example.com") + "\",\"version\":1}");
         assertEquals(List.of(), out);
         assertTrue(fixture.store.all().get(0).confirmed.isEmpty(),
-                "an explicit null sagaId must not degrade to the email's running saga");
+                "an explicit null sagaId must not degrade to the leaver's running saga");
     }
 
     @Test
-    void a_confirmation_without_the_sagaId_field_lands_via_the_email_fallback() {
+    void a_confirmation_without_the_sagaId_field_lands_via_the_leaver_fallback() {
         // the fallback exists solely for old producers that never learned the field — ABSENT is
         // the only spelling that may degrade to the email lookup
         RouterFixture fixture = router().withRunningSagaFor("leaver@example.com");
         fixture.router.handle(Source.participant("memes"),
-                "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"leaver@example.com\",\"version\":1}");
+                "{\"type\":\"USER_CONTENT_PURGED\",\"userId\":\"" + RouterFixture.idOf("leaver@example.com") + "\",\"version\":1}");
         assertTrue(fixture.store.all().get(0).confirmed.contains("memes"));
     }
 
@@ -112,7 +112,7 @@ class EventsRouterPoisonPillTest {
         UUID sagaId = fixture.store.all().get(0).id;
         fixture.router.handle(Source.participant("memes"),
                 "{\"type\":\"USER_CONTENT_PURGED\",\"sagaId\":\"" + sagaId + "\","
-                        + "\"email\":\"leaver@example.com\",\"version\":1}");
+                        + "\"userId\":\"" + RouterFixture.idOf("leaver@example.com") + "\",\"version\":1}");
         assertTrue(fixture.store.all().get(0).confirmed.contains("memes"));
     }
 }

@@ -128,14 +128,14 @@ public class InMemorySagaStore implements SagaStore {
     }
 
     @Override
-    public Optional<Recorded> confirm(String email, UUID sagaId, String participant,
+    public Optional<Recorded> confirm(UUID userId, UUID sagaId, String participant,
                                       Set<String> required, Instant at) {
         // the saga id, when echoed, is the precise address AND the final word: a stale id (the
         // saga no longer STARTED) is a stray from a closed case, never an email fallback — the
         // fallback exists solely for confirmations without the field. Mirrors the JDBC adapter.
         Optional<Saga> target = sagaId != null
                 ? Optional.ofNullable(sagas.get(sagaId)).filter(saga -> "STARTED".equals(saga.state))
-                : running(email);
+                : runningOf(userId);
         return target.map(saga -> {
             saga.confirmed.add(participant);
             // the quorum the saga opened with wins over the caller's configuration whenever it
@@ -148,10 +148,10 @@ public class InMemorySagaStore implements SagaStore {
                 // the policy rides back out with the completing confirmation: the caller sends
                 // the CLOSURE command next, and that is what carries it to the participants
                 return new Recorded(saga.id, saga.securitySagaId, true, saga.policy, saga.initiatedBy,
-                        saga.userId);
+                        saga.userId, saga.email);
             }
             return new Recorded(saga.id, saga.securitySagaId, false, saga.policy, saga.initiatedBy,
-                    saga.userId);
+                    saga.userId, saga.email);
         });
     }
 
@@ -243,13 +243,13 @@ public class InMemorySagaStore implements SagaStore {
      * recorded confirmation example can echo the id of THE saga (a stale or unknown echoed id is
      * a stray by design; see the JDBC adapter's confirm()).
      */
-    public UUID startWithId(UUID sagaId, UUID factId, String email, Instant at) {
-        return startWithId(sagaId, factId, email, null, at);
+    public UUID startWithId(UUID sagaId, UUID factId, String email, UUID userId, Instant at) {
+        return startWithId(sagaId, factId, email, userId, null, at);
     }
 
     /** The same seeding, with security's handle on the deletion — for the verdict-echo tests. */
-    public UUID startWithId(UUID sagaId, UUID factId, String email, UUID securitySagaId, Instant at) {
-        Saga saga = new Saga(sagaId, factId, email, null, securitySagaId, null, at);
+    public UUID startWithId(UUID sagaId, UUID factId, String email, UUID userId, UUID securitySagaId, Instant at) {
+        Saga saga = new Saga(sagaId, factId, email, null, securitySagaId, null, at, null, userId);
         sagas.put(saga.id, saga);
         sagaByFact.put(saga.factId, saga.id);
         return saga.id;
@@ -263,6 +263,12 @@ public class InMemorySagaStore implements SagaStore {
     private Optional<Saga> running(String email) {
         return sagas.values().stream()
                 .filter(saga -> saga.email.equals(email) && "STARTED".equals(saga.state))
+                .findFirst();
+    }
+
+    private Optional<Saga> runningOf(UUID userId) {
+        return sagas.values().stream()
+                .filter(saga -> userId != null && userId.equals(saga.userId) && "STARTED".equals(saga.state))
                 .findFirst();
     }
 }

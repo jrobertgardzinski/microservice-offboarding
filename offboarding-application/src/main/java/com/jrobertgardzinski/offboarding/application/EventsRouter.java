@@ -212,7 +212,7 @@ public class EventsRouter {
             // fall back to the participants' defaults. countsRetryFor makes the loop charge
             // the retry counter only once this command is proven delivered — an undeliverable
             // re-command burns nothing and the next sweep simply offers the candidate again
-            out.add(purgeRetryCommand(retry.sagaId(), retry.email(), retry.userId(), retry.policy(),
+            out.add(purgeRetryCommand(retry.sagaId(), retry.userId(), retry.policy(),
                     retry.initiatedBy(), retry.retriesSoFar()));
         }
         for (Compensated failed : swept.compensated()) {
@@ -225,8 +225,7 @@ public class EventsRouter {
             // the ones that confirmed: a mark whose confirmation was lost is still a mark
             // no policy and no basis: putting content BACK applies no rule, so neither field
             // has anything to decide here (the payload states SELF, the safe reading of null)
-            out.add(participantCommand(RESTORE_COMMAND, failed.sagaId(), failed.email(), failed.userId(),
-                    null, null));
+            out.add(participantCommand(RESTORE_COMMAND, failed.sagaId(), failed.userId(), null, null));
             out.add(outcome(ClosureMessages.PORTAL_PURGE_FAILED, failed.email(), failed.sagaId(),
                     failed.securitySagaId(), failed.confirmed()));
         }
@@ -244,7 +243,7 @@ public class EventsRouter {
             // whereas losing a closure leaves content hidden for ever and nobody the wiser
             boolean completed = "COMPLETED".equals(pending.state());
             out.add(participantCommand(completed ? ERASE_COMMAND : RESTORE_COMMAND,
-                    pending.sagaId(), pending.email(), pending.userId(),
+                    pending.sagaId(), pending.userId(),
                     completed ? pending.policy() : null, pending.initiatedBy()));
             out.add(completed
                     ? outcome(ClosureMessages.PORTAL_CONTENT_PURGED, pending.email(), pending.sagaId(),
@@ -288,12 +287,13 @@ public class EventsRouter {
         String email = readEmail.findValue().orElseThrow();
         UUID factId = readFactId.findValue().orElseThrow();
         UUID securitySagaId = readSecuritySagaId.findValue().orElseThrow().orElse(null);
-        // the leaver's identity: absent on a fact from before the cutover, and a mangled one is
-        // read as absent rather than refused — the address still names the person
-        if (!readUserId.errorCodes().isEmpty()) {
-            LOG.warn("the userId on this deletion fact is not an id; going by the address ({})", fact.summary());
-        }
+        // the leaver's identity is what every command and confirmation is keyed by: a fact
+        // without one names nobody the content services could act for
         UUID userId = readUserId.findValue().orElse(Optional.empty()).orElse(null);
+        if (userId == null) {
+            LOG.warn("dropping a deletion fact without a user id ({}): {}", readUserId.errorCodes(), fact.summary());
+            return List.of();
+        }
         // who asked, normalised: anything that is not exactly ADMIN is the account's own owner,
         // which is also the honest reading of a fact from before the field existed — until then
         // security had one deletion route and only the owner could walk it
@@ -321,7 +321,7 @@ public class EventsRouter {
         }
         LOG.info("commanding the content purge for {} (saga {}, requested by {})", Masked.address(email),
                 begun.sagaId(), initiatedBy);
-        return List.of(purgeCommand(begun.sagaId(), email, userId, policy, initiatedBy));
+        return List.of(purgeCommand(begun.sagaId(), userId, policy, initiatedBy));
     }
 
     /**
@@ -335,52 +335,57 @@ public class EventsRouter {
      * same account.
      */
     private List<Outgoing> onConfirmation(Envelope confirmation, String participant) {
-        Outcome<String> readEmail = confirmation.requiredText("email");
+        Outcome<UUID> readUserId = confirmation.requiredUuid(ClosureMessages.Field.USER_ID);
         Outcome<Optional<UUID>> readSagaId = confirmation.optionalUuid("sagaId");
-        List<String> refusals = Stream.of(readEmail, readSagaId)
+        List<String> refusals = Stream.of(readUserId, readSagaId)
                 .flatMap(outcome -> outcome.errorCodes().stream()).toList();
         if (!refusals.isEmpty()) {
             LOG.warn("dropping a {} confirmation this service cannot place ({}): {}",
                     participant, refusals, confirmation.summary());
             return List.of();
         }
-        String email = readEmail.findValue().orElseThrow();
+        UUID userId = readUserId.findValue().orElseThrow();
         UUID sagaId = readSagaId.findValue().orElseThrow().orElse(null);
         Optional<Recorded> landed =
-                confirm.execute(email, sagaId, participant, Instant.now(clock));
+                confirm.execute(userId, sagaId, participant, Instant.now(clock));
         // two outcomes that used to share one line, and they are not the same event: a stray
         // recorded NOTHING (no saga is waiting for it — a closed case, or an account with no
         // deletion under way), while a recorded confirmation is progress. Logging both as
         // "recorded ... saga not complete yet" told an operator chasing a stuck deletion that the
         // confirmation had been stored, when it had been dropped
         if (landed.isEmpty()) {
-            LOG.info("dropping stray {} purge confirmation for {}: no saga is waiting for it",
-                    participant, Masked.address(email));
+            LOG.info("dropping stray {} purge confirmation for user {}: no saga is waiting for it",
+                    participant, userId);
             return List.of();
         }
         if (!landed.get().completedSaga()) {
-            LOG.info("recorded {} purge confirmation for {}; saga not complete yet",
-                    participant, Masked.address(email));
+            LOG.info("recorded {} purge confirmation for user {}; saga not complete yet",
+                    participant, userId);
             return List.of();
         }
-        LOG.info("all participants confirmed the mark for {}; closing the saga (the erasure is"
-                + " commanded now) and announcing the portal purged", Masked.address(email));
+        LOG.info("all participants confirmed the mark for user {}; closing the saga (the erasure is"
+                + " commanded now) and announcing the portal purged", userId);
+        String email = landed.get().email();   // the verdict still names the account to identity
         // ORDER MATTERS, and not for the reason it looks like. The closure is what makes the
         // erasure real, and the verdict is what lets security delete the account; publishing the
         // closure first means the irreversible step is on the wire before anybody is told the
         // portal is clean. Neither is marked announced until BOTH have reached the broker, so a
         // half-published pair is simply re-published by the next sweep.
         return List.of(
-                participantCommand(ERASE_COMMAND, landed.get().sagaId(), email, landed.get().userId(),
+                participantCommand(ERASE_COMMAND, landed.get().sagaId(), landed.get().userId(),
                         landed.get().policy(), landed.get().initiatedBy()),
                 outcome(ClosureMessages.PORTAL_CONTENT_PURGED, email, landed.get().sagaId(),
                         landed.get().securitySagaId(), null));
     }
 
-    private Outgoing purgeCommand(UUID sagaId, String email, UUID userId, JsonNode policy,
-                                  String initiatedBy) {
-        return new Outgoing(Destination.PARTICIPANTS, email,
-                commandPayload(MARK_COMMAND, sagaId, email, userId, policy, initiatedBy));
+    private Outgoing purgeCommand(UUID sagaId, UUID userId, JsonNode policy, String initiatedBy) {
+        return new Outgoing(Destination.PARTICIPANTS, keyOf(userId),
+                commandPayload(MARK_COMMAND, sagaId, userId, policy, initiatedBy));
+    }
+
+    /** The partition key of a participant command: the leaver, so one person's commands stay ordered. */
+    private static String keyOf(UUID userId) {
+        return userId == null ? "" : userId.toString();
     }
 
     /**
@@ -396,11 +401,10 @@ public class EventsRouter {
      * <p>{@code partOfSaga} rather than {@code announcesSaga}: this event does not announce the
      * outcome, but it must share the outcome's fate at the outbox (see {@link Outgoing#command}).
      */
-    private Outgoing participantCommand(String type, UUID sagaId, String email, UUID userId,
-                                        String storedPolicy, String initiatedBy) {
-        return Outgoing.command(Destination.PARTICIPANTS, email,
-                commandPayload(type, sagaId, email, userId, storedPolicy(sagaId, storedPolicy),
-                        initiatedBy),
+    private Outgoing participantCommand(String type, UUID sagaId, UUID userId, String storedPolicy,
+                                        String initiatedBy) {
+        return Outgoing.command(Destination.PARTICIPANTS, keyOf(userId),
+                commandPayload(type, sagaId, userId, storedPolicy(sagaId, storedPolicy), initiatedBy),
                 sagaId);
     }
 
@@ -410,10 +414,10 @@ public class EventsRouter {
      * saga — plus the {@code countsRetryFor} mark that lets the loop charge the retry counter
      * only after the broker demonstrably accepted it.
      */
-    private Outgoing purgeRetryCommand(UUID sagaId, String email, UUID userId, String storedPolicy,
+    private Outgoing purgeRetryCommand(UUID sagaId, UUID userId, String storedPolicy,
                                        String initiatedBy, int retriesSoFar) {
-        return new Outgoing(Destination.PARTICIPANTS, email,
-                commandPayload(MARK_COMMAND, sagaId, email, userId, storedPolicy(sagaId, storedPolicy),
+        return new Outgoing(Destination.PARTICIPANTS, keyOf(userId),
+                commandPayload(MARK_COMMAND, sagaId, userId, storedPolicy(sagaId, storedPolicy),
                         initiatedBy),
                 null, new RetryCharge(sagaId, retriesSoFar));
     }
@@ -433,13 +437,12 @@ public class EventsRouter {
         }
     }
 
-    private String commandPayload(String type, UUID sagaId, String email, UUID userId, JsonNode policy,
+    private String commandPayload(String type, UUID sagaId, UUID userId, JsonNode policy,
                                   String initiatedBy) {
         ObjectNode command = mapper.createObjectNode()
                 .put("id", UUID.randomUUID().toString())
                 .put("sagaId", sagaId.toString())
                 .put("type", type)
-                .put("email", email)
                 // the basis, on ALL THREE commands and not only on the one that applies a rule:
                 // one envelope, so a participant routes them from a single listener and an
                 // operator reading the topic sees one conversation. Null for a saga opened before
@@ -449,7 +452,8 @@ public class EventsRouter {
                 // envelope version (workspace ADR 0004): fields only ever added within version 1
                 .put("version", 1);
         if (userId != null) {
-            // the leaver's identity, copied from security's fact onto all three commands
+            // the leaver, by identity — the only key a command carries; a saga opened before the
+            // cutover has none, and the participants drop such a command as addressed to nobody
             command.put(ClosureMessages.Field.USER_ID, userId.toString());
         }
         if (policy != null && policy.isObject()) {

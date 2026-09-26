@@ -75,7 +75,7 @@ public final class CommandPactBase {
     }
 
     private static String confirmation() {
-        return "{\"type\":\"USER_CONTENT_PURGED\",\"email\":\"leaver@example.com\",\"version\":1}";
+        return "{\"type\":\"USER_CONTENT_PURGED\",\"userId\":\"" + LEAVER_ID + "\",\"version\":1}";
     }
 
     /** The one event on the participants' topic — the commands and the verdict travel together. */

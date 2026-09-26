@@ -116,7 +116,7 @@ class SharedTopicCascadeTrafficTest {
     }
 
     private static String confirmation(UUID sagaId) {
-        return "{\"type\":\"USER_CONTENT_PURGED\",\"sagaId\":\"" + sagaId + "\",\"email\":\""
-                + LEAVER + "\",\"version\":1}";
+        return "{\"type\":\"USER_CONTENT_PURGED\",\"sagaId\":\"" + sagaId + "\",\"userId\":\""
+                + RouterFixture.idOf(LEAVER) + "\",\"version\":1}";
     }
 }

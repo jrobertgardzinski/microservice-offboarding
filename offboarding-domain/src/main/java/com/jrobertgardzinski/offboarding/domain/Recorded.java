@@ -17,11 +17,16 @@ import java.util.UUID;
  * when that policy is needed again.
  */
 public record Recorded(UUID sagaId, UUID securitySagaId, boolean completedSaga, String policy,
-                String initiatedBy, UUID userId) {
+                String initiatedBy, UUID userId, String email) {
 
     public Recorded(UUID sagaId, UUID securitySagaId, boolean completedSaga, String policy,
                     String initiatedBy) {
-        this(sagaId, securitySagaId, completedSaga, policy, initiatedBy, null);
+        this(sagaId, securitySagaId, completedSaga, policy, initiatedBy, null, null);
+    }
+
+    public Recorded(UUID sagaId, UUID securitySagaId, boolean completedSaga, String policy,
+                    String initiatedBy, UUID userId) {
+        this(sagaId, securitySagaId, completedSaga, policy, initiatedBy, userId, null);
     }
 
     /** The pre-closure spelling, for callers and tests that have no policy to carry. */

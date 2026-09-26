@@ -54,6 +54,11 @@ class JdbcSagaStoreTest {
     /** The purge timeout (SweepOverdue.DEFAULT_PURGE_TIMEOUT, 120s) — the sweep's window. */
     private static final long TIMEOUT = 120;
 
+    /** The id security minted for an address: the tests speak in addresses, the store in ids. */
+    private static UUID idOf(String email) {
+        return UUID.nameUUIDFromBytes(("user:" + email).getBytes());
+    }
+
     private final DataSource dataSource = Database.migratedDataSource();
     private final JdbcSagaStore store = new JdbcSagaStore(dataSource);
 
@@ -73,7 +78,7 @@ class JdbcSagaStoreTest {
         UUID saga = store.start(new Opening(UUID.randomUUID(), "alice@example.com", null, null,
                 Set.of("memes"), "SELF", leaver), T0);
 
-        Recorded recorded = store.confirm("alice@example.com", saga, "memes", Set.of("memes"),
+        Recorded recorded = store.confirm(idOf("alice@example.com"), saga, "memes", Set.of("memes"),
                 T0.plusSeconds(1)).orElseThrow();
         assertEquals(leaver, recorded.userId(), "the closure command needs it");
         assertEquals(List.of(leaver), store.unannouncedOutcomes(T0.plusSeconds(60)).stream()
@@ -93,16 +98,16 @@ class JdbcSagaStoreTest {
     @Test
     void a_replayed_fact_finds_its_saga_even_after_completion() {
         UUID fact = UUID.randomUUID();
-        UUID first = store.start(fact, "alice@example.com", T0);
+        UUID first = store.start(fact, "alice@example.com", idOf("alice@example.com"), T0);
         store.complete(first, T0);
-        UUID replayed = store.start(fact, "alice@example.com", T0.plusSeconds(5));
+        UUID replayed = store.start(fact, "alice@example.com", idOf("alice@example.com"), T0.plusSeconds(5));
         assertEquals(first, replayed, "a replayed fact must not fork a second saga");
     }
 
     @Test
     void a_second_request_while_one_runs_joins_the_running_saga() {
-        UUID first = store.start(UUID.randomUUID(), "alice@example.com", T0);
-        UUID second = store.start(UUID.randomUUID(), "alice@example.com", T0.plusSeconds(5));
+        UUID first = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
+        UUID second = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0.plusSeconds(5));
         assertEquals(first, second, "one running saga per account");
     }
 
@@ -111,14 +116,12 @@ class JdbcSagaStoreTest {
         // an ADMIN bans somebody, keeping their popular memes; the person then asks to be
         // forgotten themselves. Their request JOINS the running case — so the case has to become
         // theirs, conditions and all, or the erasure they asked for answers with kept content
-        UUID banned = store.start(new Opening(UUID.randomUUID(), "alice@example.com",
-                "{\"memes\":\"KEEP_POPULAR_ANONYMIZED:100\"}", null, Set.of("memes"), "ADMIN"), T0);
+        UUID banned = store.start(new Opening(UUID.randomUUID(), "alice@example.com", "{\"memes\":\"KEEP_POPULAR_ANONYMIZED:100\"}", null, Set.of("memes"), "ADMIN", idOf("alice@example.com")), T0);
 
-        UUID joined = store.start(new Opening(UUID.randomUUID(), "alice@example.com",
-                null, null, Set.of("memes"), "SELF"), T0.plusSeconds(5));
+        UUID joined = store.start(new Opening(UUID.randomUUID(), "alice@example.com", null, null, Set.of("memes"), "SELF", idOf("alice@example.com")), T0.plusSeconds(5));
 
         assertEquals(banned, joined, "one running saga per account");
-        Recorded landed = store.confirm("alice@example.com", null, "memes",
+        Recorded landed = store.confirm(idOf("alice@example.com"), null, "memes",
                 Set.of("memes"), T0.plusSeconds(6)).orElseThrow();
         assertEquals("SELF", landed.initiatedBy(), "the case is the owner's now");
         assertNull(landed.policy(), "and the administrator's conditions went with it");
@@ -126,14 +129,12 @@ class JdbcSagaStoreTest {
 
     @Test
     void an_administrator_cannot_put_conditions_on_a_running_self_request() {
-        UUID own = store.start(new Opening(UUID.randomUUID(), "bob@example.com",
-                null, null, Set.of("memes"), "SELF"), T0);
+        UUID own = store.start(new Opening(UUID.randomUUID(), "bob@example.com", null, null, Set.of("memes"), "SELF", idOf("bob@example.com")), T0);
 
-        store.start(new Opening(UUID.randomUUID(), "bob@example.com",
-                "{\"memes\":\"KEEP_POPULAR_ANONYMIZED:1\"}", null, Set.of("memes"), "ADMIN"),
+        store.start(new Opening(UUID.randomUUID(), "bob@example.com", "{\"memes\":\"KEEP_POPULAR_ANONYMIZED:1\"}", null, Set.of("memes"), "ADMIN", idOf("bob@example.com")),
                 T0.plusSeconds(5));
 
-        Recorded landed = store.confirm("bob@example.com", null, "memes",
+        Recorded landed = store.confirm(idOf("bob@example.com"), null, "memes",
                 Set.of("memes"), T0.plusSeconds(6)).orElseThrow();
         assertEquals("SELF", landed.initiatedBy(), "the adoption only ever moves ADMIN -> SELF");
         assertNull(landed.policy());
@@ -146,8 +147,8 @@ class JdbcSagaStoreTest {
         // into a 23505 and the loser must adopt the winner's saga instead of failing
         UUID fact = UUID.randomUUID();
         List<UUID> sagas = race(
-                () -> store.start(fact, "race@example.com", T0),
-                () -> store.start(fact, "race@example.com", T0));
+                () -> store.start(fact, "race@example.com", idOf("race@example.com"), T0),
+                () -> store.start(fact, "race@example.com", idOf("race@example.com"), T0));
         assertEquals(sagas.get(0), sagas.get(1), "a replayed fact must not fork under a race either");
     }
 
@@ -156,8 +157,8 @@ class JdbcSagaStoreTest {
         // different facts, same account: the running_email UNIQUE (V2) is what makes "one running
         // saga per email" hold even when the application-level check races
         List<UUID> sagas = race(
-                () -> store.start(UUID.randomUUID(), "race@example.com", T0),
-                () -> store.start(UUID.randomUUID(), "race@example.com", T0));
+                () -> store.start(UUID.randomUUID(), "race@example.com", idOf("race@example.com"), T0),
+                () -> store.start(UUID.randomUUID(), "race@example.com", idOf("race@example.com"), T0));
         assertEquals(sagas.get(0), sagas.get(1), "two facts must not fork two sagas for one email");
     }
 
@@ -180,7 +181,7 @@ class JdbcSagaStoreTest {
     @Test
     void a_second_started_row_for_one_email_is_rejected_by_the_database_itself() throws Exception {
         // belt and braces: even code that skips the adapter cannot fork a running saga
-        store.start(UUID.randomUUID(), "alice@example.com", T0);
+        store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
         try (Connection connection = dataSource.getConnection();
              PreparedStatement insert = connection.prepareStatement(
                      "INSERT INTO offboarding_sagas "
@@ -197,14 +198,14 @@ class JdbcSagaStoreTest {
 
     @Test
     void only_the_last_required_confirmation_completes_and_only_once() {
-        store.start(UUID.randomUUID(), "alice@example.com", T0);
-        assertFalse(completes(store.confirm("alice@example.com", null, "memes", THREE, T0)));
-        assertFalse(completes(store.confirm("alice@example.com", null, "memes", THREE, T0)),
+        store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
+        assertFalse(completes(store.confirm(idOf("alice@example.com"), null, "memes", THREE, T0)));
+        assertFalse(completes(store.confirm(idOf("alice@example.com"), null, "memes", THREE, T0)),
                 "duplicate is a no-op");
-        assertFalse(completes(store.confirm("alice@example.com", null, "comments", THREE, T0)));
-        assertTrue(completes(store.confirm("alice@example.com", null, "collections", THREE, T0)),
+        assertFalse(completes(store.confirm(idOf("alice@example.com"), null, "comments", THREE, T0)));
+        assertTrue(completes(store.confirm(idOf("alice@example.com"), null, "collections", THREE, T0)),
                 "the last one completes");
-        assertTrue(store.confirm("alice@example.com", null, "collections", THREE, T0).isEmpty(),
+        assertTrue(store.confirm(idOf("alice@example.com"), null, "collections", THREE, T0).isEmpty(),
                 "the once-latch: completion is reported to exactly one caller — and the saga is"
                         + " no longer STARTED, so this echo is a stray that records nothing");
     }
@@ -218,19 +219,19 @@ class JdbcSagaStoreTest {
     void a_recorded_confirmation_is_distinguishable_from_a_stray() {
         // the two used to be one answer (Optional.empty) and the router logged both as "recorded
         // ... not complete yet", telling an operator that a dropped confirmation had been stored
-        store.start(UUID.randomUUID(), "alice@example.com", T0);
+        store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
         Recorded recorded =
-                store.confirm("alice@example.com", null, "memes", THREE, T0).orElseThrow();
+                store.confirm(idOf("alice@example.com"), null, "memes", THREE, T0).orElseThrow();
         assertFalse(recorded.completedSaga(), "recorded, and the saga still owes two");
-        assertTrue(store.confirm("nobody@example.com", null, "memes", THREE, T0).isEmpty(),
+        assertTrue(store.confirm(idOf("nobody@example.com"), null, "memes", THREE, T0).isEmpty(),
                 "a stray landed on nothing at all — a different event, and a different log line");
     }
 
     @Test
     void a_confirmation_addressed_by_saga_id_lands_on_that_saga() {
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
         assertEquals(saga,
-                store.confirm("alice@example.com", saga, "memes", Set.of("memes"), T0)
+                store.confirm(idOf("alice@example.com"), saga, "memes", Set.of("memes"), T0)
                         .orElseThrow().sagaId(),
                 "the echoed saga id is the precise address");
     }
@@ -243,10 +244,10 @@ class JdbcSagaStoreTest {
         // while the content of two services the saga did command is still there
         UUID saga = store.start(new Opening(UUID.randomUUID(), "alice@example.com",
                 null, null, THREE), T0);
-        assertFalse(completes(store.confirm("alice@example.com", saga, "memes", Set.of("memes"), T0)),
+        assertFalse(completes(store.confirm(idOf("alice@example.com"), saga, "memes", Set.of("memes"), T0)),
                 "the quorum is the one this saga opened with, not the one configured now");
-        assertFalse(completes(store.confirm("alice@example.com", saga, "comments", Set.of("memes"), T0)));
-        assertTrue(completes(store.confirm("alice@example.com", saga, "collections", Set.of("memes"), T0)),
+        assertFalse(completes(store.confirm(idOf("alice@example.com"), saga, "comments", Set.of("memes"), T0)));
+        assertTrue(completes(store.confirm(idOf("alice@example.com"), saga, "collections", Set.of("memes"), T0)),
                 "and it completes when THAT quorum is reached");
     }
 
@@ -257,17 +258,17 @@ class JdbcSagaStoreTest {
         // fail on a timeout instead of completing
         UUID saga = store.start(new Opening(UUID.randomUUID(), "alice@example.com",
                 null, null, Set.of("memes")), T0);
-        assertTrue(completes(store.confirm("alice@example.com", saga, "memes", THREE, T0)),
+        assertTrue(completes(store.confirm(idOf("alice@example.com"), saga, "memes", THREE, T0)),
                 "the only participant that was ever asked is the whole quorum");
     }
 
     @Test
     void a_saga_that_recorded_no_quorum_falls_back_to_the_configured_one() {
         // every row from before the column existed: the configured set is the honest answer
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
-        assertFalse(completes(store.confirm("alice@example.com", saga, "memes", THREE, T0)));
-        store.confirm("alice@example.com", saga, "comments", THREE, T0);
-        assertTrue(completes(store.confirm("alice@example.com", saga, "collections", THREE, T0)));
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
+        assertFalse(completes(store.confirm(idOf("alice@example.com"), saga, "memes", THREE, T0)));
+        store.confirm(idOf("alice@example.com"), saga, "comments", THREE, T0);
+        assertTrue(completes(store.confirm(idOf("alice@example.com"), saga, "collections", THREE, T0)));
     }
 
     @Test
@@ -276,17 +277,17 @@ class JdbcSagaStoreTest {
         // address, and a late verdict of a closed case settles a NEWER deletion for the same person
         UUID securitySaga = UUID.randomUUID();
         UUID saga = store.start(new Opening(UUID.randomUUID(), "alice@example.com",
-                null, securitySaga, Set.of("memes", "comments")), T0);
+                null, securitySaga, Set.of("memes", "comments"), null, idOf("alice@example.com")), T0);
 
         assertEquals(securitySaga,
-                store.confirm("alice@example.com", saga, "memes", THREE, T0)
+                store.confirm(idOf("alice@example.com"), saga, "memes", THREE, T0)
                         .orElseThrow().securitySagaId(),
                 "a confirmation hands back the handle the (possible) verdict must echo");
 
         SweepResult swept =
                 store.sweepOverdue(T0.plusSeconds(TIMEOUT), NO_RETRIES, T0.plusSeconds(TIMEOUT + 1));
         assertEquals(List.of(new Compensated(saga, "alice@example.com", Set.of("memes"),
-                        securitySaga)), swept.compensated(),
+                        securitySaga, idOf("alice@example.com"))), swept.compensated(),
                 "the failure verdict carries the handle of the deletion it is about");
         assertEquals(securitySaga,
                 store.unannouncedOutcomes(T0.plusSeconds(9999)).get(0).securitySagaId(),
@@ -305,36 +306,36 @@ class JdbcSagaStoreTest {
         assertEquals(saga, store.start(new Opening(UUID.randomUUID(), "alice@example.com",
                 null, second, THREE), T0.plusSeconds(5)), "one running saga per account");
         assertEquals(second,
-                store.confirm("alice@example.com", saga, "memes", THREE, T0).orElseThrow()
+                store.confirm(idOf("alice@example.com"), saga, "memes", THREE, T0).orElseThrow()
                         .securitySagaId(),
                 "the verdict must reach the request that is actually waiting for it");
     }
 
     @Test
     void a_confirmation_echoing_a_finished_saga_is_a_stray_and_never_touches_a_newer_one() {
-        UUID finished = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        UUID finished = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
         store.complete(finished, T0);
-        assertTrue(store.confirm("alice@example.com", finished, "memes", THREE, T0).isEmpty(),
+        assertTrue(store.confirm(idOf("alice@example.com"), finished, "memes", THREE, T0).isEmpty(),
                 "an echo of a finished saga is a stray, recorded nowhere");
-        UUID second = store.start(UUID.randomUUID(), "alice@example.com", T0.plusSeconds(10));
-        assertTrue(store.confirm("alice@example.com", finished, "memes", Set.of("memes"),
+        UUID second = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0.plusSeconds(10));
+        assertTrue(store.confirm(idOf("alice@example.com"), finished, "memes", Set.of("memes"),
                         T0.plusSeconds(11)).isEmpty(),
                 "even with a NEW saga running for the email, the stale id must stay a stray — "
                         + "falling back to the email lookup would let a closed case confirm the new one");
-        assertEquals(new Recorded(second, null, true),
-                store.confirm("alice@example.com", second, "memes", Set.of("memes"), T0.plusSeconds(12))
+        assertEquals(new Recorded(second, null, true, null, null, idOf("alice@example.com"), "alice@example.com"),
+                store.confirm(idOf("alice@example.com"), second, "memes", Set.of("memes"), T0.plusSeconds(12))
                         .orElseThrow(),
                 "the new saga still completes on its OWN confirmation — the stray left no trace");
     }
 
     @Test
     void a_stray_confirmation_records_nothing() {
-        assertTrue(store.confirm("nobody@example.com", null, "memes", THREE, T0).isEmpty());
+        assertTrue(store.confirm(idOf("nobody@example.com"), null, "memes", THREE, T0).isEmpty());
     }
 
     @Test
     void an_empty_required_set_completes_via_complete() {
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
         assertTrue(store.complete(saga, T0));
         assertFalse(store.complete(saga, T0), "already completed");
     }
@@ -354,7 +355,7 @@ class JdbcSagaStoreTest {
                 "a saga that recorded a quorum of three may not be completed by a caller that"
                         + " waits for nobody — that is the V6 rule, through the other door");
 
-        Recorded landed = store.confirm("alice@example.com", saga, "memes", THREE,
+        Recorded landed = store.confirm(idOf("alice@example.com"), saga, "memes", THREE,
                 T0.plusSeconds(6)).orElseThrow();
         assertFalse(landed.completedSaga(),
                 "and the case is still collecting: one of its three confirmations lands as usual");
@@ -369,7 +370,7 @@ class JdbcSagaStoreTest {
         // been rewound) opened a SECOND saga and re-ran the whole purge, erasing the content of an
         // account whose compensation had just given it back
         UUID joining = UUID.randomUUID();
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
         assertEquals(saga, store.start(joining, "alice@example.com", T0.plusSeconds(5)),
                 "one running saga per account");
 
@@ -387,7 +388,7 @@ class JdbcSagaStoreTest {
         // delivered. The charge used to be a bare "retries = retries + 1", so the counter went
         // 0 -> 2 in a round the budget sized for one: two overlapping rounds and the case
         // capitulates after half the retries it was promised, with nothing to correct the number
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
         Retry mine = sweepAt(T0.plusSeconds(TIMEOUT + 1)).retries().get(0);
         Retry theirs = sweepAt(T0.plusSeconds(TIMEOUT + 2)).retries().get(0);
         assertEquals(mine.retriesSoFar(), theirs.retriesSoFar(),
@@ -403,8 +404,8 @@ class JdbcSagaStoreTest {
 
     @Test
     void the_sweep_compensates_only_the_overdue_and_only_once() {
-        store.start(UUID.randomUUID(), "old@example.com", T0);
-        store.start(UUID.randomUUID(), "fresh@example.com", T0.plusSeconds(300));
+        store.start(UUID.randomUUID(), "old@example.com", idOf("old@example.com"), T0);
+        store.start(UUID.randomUUID(), "fresh@example.com", idOf("fresh@example.com"), T0.plusSeconds(300));
         SweepResult swept =
                 store.sweepOverdue(T0.plusSeconds(120), NO_RETRIES, T0.plusSeconds(400));
         assertEquals(List.of("old@example.com"),
@@ -425,8 +426,8 @@ class JdbcSagaStoreTest {
      */
     @Test
     void every_delivered_recommand_buys_a_whole_timeout_before_the_next_decision() {
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
-        store.confirm("alice@example.com", null, "memes", THREE, T0);
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
+        store.confirm(idOf("alice@example.com"), null, "memes", THREE, T0);
         Instant lastAsked = T0;
         for (int attempt = 1; attempt <= 3; attempt++) {
             Instant tooEarly = lastAsked.plusSeconds(TIMEOUT - 1);
@@ -435,7 +436,7 @@ class JdbcSagaStoreTest {
                             + " the last command — that is the participant's budget");
             Instant due = lastAsked.plusSeconds(TIMEOUT + 1);
             SweepResult swept = sweepAt(due);
-            assertEquals(List.of(new Retry(saga, "alice@example.com", null, null, attempt - 1)),
+            assertEquals(List.of(new Retry(saga, "alice@example.com", null, null, attempt - 1, idOf("alice@example.com"))),
                     swept.retries(),
                     "attempt " + attempt + " re-commands instead of giving up, carrying the retry"
                             + " count the charge will pay for");
@@ -450,7 +451,7 @@ class JdbcSagaStoreTest {
                 "and capitulating here would announce the failure while the participant is still"
                         + " working on the re-command it was just sent");
         SweepResult last = sweepAt(lastAsked.plusSeconds(TIMEOUT + 1));
-        assertEquals(List.of(new Compensated(saga, "alice@example.com", Set.of("memes"))),
+        assertEquals(List.of(new Compensated(saga, "alice@example.com", Set.of("memes"), null, idOf("alice@example.com"))),
                 last.compensated(),
                 "capitulation names the participants that DID purge — the partial-purge disclosure");
         // 4 x 120s + 4s: the whole case outlives every one of the participant's 90s budgets, which
@@ -468,11 +469,11 @@ class JdbcSagaStoreTest {
         // the broker is down: every sweep offers the candidate, no retryDelivered() ever comes —
         // the counter must stay untouched and the saga must NOT compensate, or three sweeps
         // against a dead broker would announce a failure without one re-command on the wire
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
         for (int sweep = 1; sweep <= 5; sweep++) {
             SweepResult swept =
                     store.sweepOverdue(T0.plusSeconds(120), 3, T0.plusSeconds(120L + sweep));
-            assertEquals(List.of(new Retry(saga, "alice@example.com")), swept.retries(),
+            assertEquals(List.of(new Retry(saga, "alice@example.com", null, null, 0, idOf("alice@example.com"))), swept.retries(),
                     "sweep " + sweep + " still offers the SAME candidate — nothing was delivered");
             assertEquals(List.of(), swept.compensated(),
                     "no compensation may happen while no retry was ever delivered");
@@ -484,17 +485,18 @@ class JdbcSagaStoreTest {
         // the leaver's choices, stored at start (V3), must come back with the sweep's retry so
         // the re-commanded purge repeats the ORIGINAL command instead of the participants' defaults
         String policy = "{\"memes\":\"DELETE\",\"comments\":\"ANONYMIZE_AUTHOR\"}";
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", policy, T0);
+        UUID saga = store.start(new Opening(UUID.randomUUID(), "alice@example.com", policy, null, null, null,
+                idOf("alice@example.com")), T0);
         SweepResult swept = store.sweepOverdue(T0.plusSeconds(120), 3, T0.plusSeconds(130));
-        assertEquals(List.of(new Retry(saga, "alice@example.com", policy)), swept.retries(),
+        assertEquals(List.of(new Retry(saga, "alice@example.com", policy, null, 0, idOf("alice@example.com"))), swept.retries(),
                 "the retry must carry the policy exactly as stored");
     }
 
     @Test
     void a_saga_started_without_policy_retries_without_one() {
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
         SweepResult swept = store.sweepOverdue(T0.plusSeconds(120), 3, T0.plusSeconds(130));
-        assertEquals(List.of(new Retry(saga, "alice@example.com", null)), swept.retries(),
+        assertEquals(List.of(new Retry(saga, "alice@example.com", null, null, 0, idOf("alice@example.com"))), swept.retries(),
                 "no stored choices means an honestly bare re-command — never an invented policy");
     }
 
@@ -503,7 +505,7 @@ class JdbcSagaStoreTest {
         // updated_at is the sweep's clock now, so it has to come from the SAME clock the cutoff
         // does — the caller's. Taking the database's CURRENT_TIMESTAMP instead would put the skew
         // between two clocks straight into the participant's budget
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
         store.retryDelivered(saga, 0, T0.plusSeconds(130));
         assertEquals(T0.plusSeconds(130), updatedAtInDb(saga),
                 "the delivered re-command is activity on the case, stamped when the caller says");
@@ -523,7 +525,7 @@ class JdbcSagaStoreTest {
 
     @Test
     void a_delivered_retry_is_not_counted_against_a_finished_saga() throws Exception {
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
         store.complete(saga, T0);
         // a late delivery report after completion must be a no-op — and must SAY so (false),
         // because the loop's retries-delivered metric counts only what was actually charged
@@ -552,18 +554,18 @@ class JdbcSagaStoreTest {
 
     @Test
     void a_completed_saga_never_compensates() {
-        store.start(UUID.randomUUID(), "alice@example.com", T0);
-        store.confirm("alice@example.com", null, "memes", Set.of("memes"), T0);
+        store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
+        store.confirm(idOf("alice@example.com"), null, "memes", Set.of("memes"), T0);
         assertEquals(List.of(),
                 store.sweepOverdue(T0.plusSeconds(9999), NO_RETRIES, T0.plusSeconds(10000)).compensated());
     }
 
     @Test
     void a_finished_saga_owes_its_outcome_until_marked_announced() {
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
-        store.confirm("alice@example.com", null, "memes", Set.of("memes"), T0.plusSeconds(1));
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
+        store.confirm(idOf("alice@example.com"), null, "memes", Set.of("memes"), T0.plusSeconds(1));
         List<PendingOutcome> pending = store.unannouncedOutcomes(T0.plusSeconds(60));
-        assertEquals(List.of(new PendingOutcome(saga, "alice@example.com", "COMPLETED", Set.of())),
+        assertEquals(List.of(new PendingOutcome(saga, "alice@example.com", "COMPLETED", Set.of(), null, null, null, idOf("alice@example.com"))),
                 pending, "completing does NOT announce — the outbox owes the outcome");
         store.markAnnounced(saga);
         assertEquals(List.of(), store.unannouncedOutcomes(T0.plusSeconds(60)),
@@ -572,16 +574,16 @@ class JdbcSagaStoreTest {
 
     @Test
     void a_fresh_unannounced_outcome_is_not_republished_yet() {
-        store.start(UUID.randomUUID(), "alice@example.com", T0);
-        store.confirm("alice@example.com", null, "memes", Set.of("memes"), T0.plusSeconds(50));
+        store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
+        store.confirm(idOf("alice@example.com"), null, "memes", Set.of("memes"), T0.plusSeconds(50));
         assertEquals(List.of(), store.unannouncedOutcomes(T0.plusSeconds(50)),
                 "the age guard keeps outcomes merely in flight from doubling");
     }
 
     @Test
     void a_compensated_outcome_carries_the_partial_purge() {
-        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", T0);
-        store.confirm("alice@example.com", null, "comments", THREE, T0);
+        UUID saga = store.start(UUID.randomUUID(), "alice@example.com", idOf("alice@example.com"), T0);
+        store.confirm(idOf("alice@example.com"), null, "comments", THREE, T0);
         store.sweepOverdue(T0.plusSeconds(120), NO_RETRIES, T0.plusSeconds(130));
         assertEquals(Set.of("comments"),
                 store.unannouncedOutcomes(T0.plusSeconds(999)).get(0).confirmed());
@@ -589,16 +591,16 @@ class JdbcSagaStoreTest {
 
     @Test
     void the_retention_window_deletes_finished_and_announced_sagas_with_their_confirmations() {
-        UUID old = store.start(UUID.randomUUID(), "old@example.com", T0);
-        store.confirm("old@example.com", null, "memes", Set.of("memes"), T0.plusSeconds(1));
+        UUID old = store.start(UUID.randomUUID(), "old@example.com", idOf("old@example.com"), T0);
+        store.confirm(idOf("old@example.com"), null, "memes", Set.of("memes"), T0.plusSeconds(1));
         store.markAnnounced(old);
-        store.start(UUID.randomUUID(), "running@example.com", T0);
-        UUID unannounced = store.start(UUID.randomUUID(), "owing@example.com", T0.plusSeconds(2));
+        store.start(UUID.randomUUID(), "running@example.com", idOf("running@example.com"), T0);
+        UUID unannounced = store.start(UUID.randomUUID(), "owing@example.com", idOf("owing@example.com"), T0.plusSeconds(2));
         store.complete(unannounced, T0.plusSeconds(3));
 
         assertEquals(1, store.deleteFinishedBefore(T0.plusSeconds(60)),
                 "only old + finished + announced goes; " + unannounced + " still owes its outcome");
-        assertTrue(store.confirm("old@example.com", old, "memes", Set.of("memes"), T0.plusSeconds(61))
+        assertTrue(store.confirm(idOf("old@example.com"), old, "memes", Set.of("memes"), T0.plusSeconds(61))
                         .isEmpty(),
                 "the deleted saga is gone for confirmations too");
         assertEquals(List.of(), store.unannouncedOutcomes(T0.plusSeconds(1)).stream()

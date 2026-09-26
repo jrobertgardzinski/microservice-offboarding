@@ -32,6 +32,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 @Feature("Idempotent commands")
 class IdempotentCommandsTest {
 
+    /** The id security minted for an address: the tests speak in addresses, the saga in ids. */
+    private static java.util.UUID idOf(String email) {
+        return java.util.UUID.nameUUIDFromBytes(("user:" + email).getBytes());
+    }
+
     private static final Set<String> PARTICIPANTS = Set.of("memes", "comments", "collections");
     private static final Instant T0 = Instant.parse("2026-07-11T12:00:00Z");
     private static final java.util.UUID ALICE_FACT =
@@ -44,23 +49,23 @@ class IdempotentCommandsTest {
     private static Map<String, Consumer<InMemorySagaStore>> commands() {
         Map<String, Consumer<InMemorySagaStore>> c = new LinkedHashMap<>();
         c.put("begin a fresh offboarding",
-                store -> new BeginOffboarding(store, PARTICIPANTS).execute(CAROL_FACT, "carol@example.com", T0));
+                store -> new BeginOffboarding(store, PARTICIPANTS).execute(CAROL_FACT, "carol@example.com", null, null, null, idOf("carol@example.com"), T0));
         c.put("begin over an already-running saga",
-                store -> new BeginOffboarding(store, PARTICIPANTS).execute(ALICE_FACT, "alice@example.com", T0));
+                store -> new BeginOffboarding(store, PARTICIPANTS).execute(ALICE_FACT, "alice@example.com", null, null, null, idOf("alice@example.com"), T0));
         c.put("begin with no participants (instant completion)",
-                store -> new BeginOffboarding(store, Set.of()).execute(CAROL_FACT, "carol@example.com", T0));
+                store -> new BeginOffboarding(store, Set.of()).execute(CAROL_FACT, "carol@example.com", null, null, null, idOf("carol@example.com"), T0));
         c.put("record a first confirmation",
-                store -> new RecordConfirmation(store, PARTICIPANTS).execute("alice@example.com", null, "comments", T0));
+                store -> new RecordConfirmation(store, PARTICIPANTS).execute(idOf("alice@example.com"), null, "comments", T0));
         c.put("record an already-recorded confirmation",
-                store -> new RecordConfirmation(store, PARTICIPANTS).execute("alice@example.com", null, "memes", T0));
+                store -> new RecordConfirmation(store, PARTICIPANTS).execute(idOf("alice@example.com"), null, "memes", T0));
         c.put("record the completing confirmation",
                 store -> {
                     RecordConfirmation confirm = new RecordConfirmation(store, PARTICIPANTS);
-                    confirm.execute("alice@example.com", null, "comments", T0);
-                    confirm.execute("alice@example.com", null, "collections", T0);
+                    confirm.execute(idOf("alice@example.com"), null, "comments", T0);
+                    confirm.execute(idOf("alice@example.com"), null, "collections", T0);
                 });
         c.put("record a stray confirmation (no saga)",
-                store -> new RecordConfirmation(store, PARTICIPANTS).execute("nobody@example.com", null, "memes", T0));
+                store -> new RecordConfirmation(store, PARTICIPANTS).execute(idOf("nobody@example.com"), null, "memes", T0));
         c.put("sweep the overdue",
                 store -> new SweepOverdue(store, Duration.ofMinutes(2))
                         .execute(T0.plus(Duration.ofMinutes(10))));
@@ -70,8 +75,8 @@ class IdempotentCommandsTest {
     /** A saga already running for alice, with memes confirmed. */
     private static InMemorySagaStore seeded() {
         InMemorySagaStore store = new InMemorySagaStore();
-        new BeginOffboarding(store, PARTICIPANTS).execute(ALICE_FACT, "alice@example.com", T0);
-        new RecordConfirmation(store, PARTICIPANTS).execute("alice@example.com", null, "memes", T0);
+        new BeginOffboarding(store, PARTICIPANTS).execute(ALICE_FACT, "alice@example.com", null, null, null, idOf("alice@example.com"), T0);
+        new RecordConfirmation(store, PARTICIPANTS).execute(idOf("alice@example.com"), null, "memes", T0);
         return store;
     }
 

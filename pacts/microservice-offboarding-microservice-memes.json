@@ -5,29 +5,33 @@
   "messages": [
     {
       "contents": {
-        "email": "leaver@example.com",
         "sagaId": "e2490de5-5bd3-43d5-b7c4-526e33f71304",
-        "type": "USER_CONTENT_PURGED"
+        "type": "USER_CONTENT_PURGED",
+        "userId": "e2490de5-5bd3-43d5-b7c4-526e33f71304"
       },
       "description": "a user content purged confirmation",
       "generators": {
         "body": {
           "$.sagaId": {
             "type": "Uuid"
+          },
+          "$.userId": {
+            "type": "Uuid"
           }
         }
       },
       "matchingRules": {
         "body": {
-          "$.email": {
+          "$.sagaId": {
             "combine": "AND",
             "matchers": [
               {
-                "match": "type"
+                "match": "regex",
+                "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
               }
             ]
           },
-          "$.sagaId": {
+          "$.userId": {
             "combine": "AND",
             "matchers": [
               {
