@@ -17,7 +17,11 @@ import java.util.UUID;
  * a whole case is sized around halved, and nothing ever corrected it.
  */
 public record Retry(UUID sagaId, String email, String policy, String initiatedBy,
-                    int retriesSoFar) {
+                    int retriesSoFar, UUID userId) {
+    public Retry(UUID sagaId, String email, String policy, String initiatedBy, int retriesSoFar) {
+        this(sagaId, email, policy, initiatedBy, retriesSoFar, null);
+    }
+
     public Retry(UUID sagaId, String email) {
         this(sagaId, email, null, null, 0);
     }

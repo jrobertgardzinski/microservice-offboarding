@@ -84,8 +84,8 @@ public class JdbcSagaStore implements SagaStore {
                         "INSERT INTO offboarding_sagas "
                                 + "(id, fact_id, email, running_email, state, policy, "
                                 + "security_saga_id, required_participants, initiated_by, "
-                                + "created_at, updated_at) "
-                                + "VALUES (?, ?, ?, ?, 'STARTED', ?, ?, ?, ?, ?, ?)")) {
+                                + "created_at, updated_at, user_id) "
+                                + "VALUES (?, ?, ?, ?, 'STARTED', ?, ?, ?, ?, ?, ?, ?)")) {
                     insert.setObject(1, id);
                     insert.setObject(2, opening.factId());
                     insert.setString(3, opening.email());
@@ -96,6 +96,7 @@ public class JdbcSagaStore implements SagaStore {
                     insert.setString(8, opening.initiatedBy());   // the legal basis (V7)
                     insert.setTimestamp(9, Timestamp.from(at));
                     insert.setTimestamp(10, Timestamp.from(at));
+                    insert.setObject(11, opening.userId());   // the leaver's identity, when stated
                     insert.executeUpdate();
                     return id;
                 } catch (SQLException raced) {
@@ -187,7 +188,7 @@ public class JdbcSagaStore implements SagaStore {
             // the policy rides back out with the completing confirmation: it is what the closure
             // command carries, and this is the moment the closure is sent
             return Optional.of(new Recorded(saga, target.get().securitySagaId(), completed,
-                    target.get().policy(), target.get().initiatedBy()));
+                    target.get().policy(), target.get().initiatedBy(), target.get().userId()));
         } catch (SQLException e) {
             throw new IllegalStateException("could not record purge confirmation", e);
         }
@@ -218,7 +219,7 @@ public class JdbcSagaStore implements SagaStore {
         List<Compensated> compensated = new ArrayList<>();
         try (Connection connection = dataSource.getConnection()) {
             record Overdue(UUID id, String email, int retriesSoFar, String policy,
-                           UUID securitySagaId, String initiatedBy) {
+                           UUID securitySagaId, String initiatedBy, UUID userId) {
             }
             List<Overdue> overdue = new ArrayList<>();
             // updated_at, NOT created_at (V4 carries the index): the deadline is measured from the
@@ -227,7 +228,7 @@ public class JdbcSagaStore implements SagaStore {
             // the whole retry budget burned down in three sweep intervals and the failure verdict
             // overtook the re-command the participant was still working on
             try (PreparedStatement select = connection.prepareStatement(
-                    "SELECT id, email, retries, policy, security_saga_id, initiated_by "
+                    "SELECT id, email, retries, policy, security_saga_id, initiated_by, user_id "
                             + "FROM offboarding_sagas "
                             + "WHERE state = 'STARTED' AND updated_at < ?")) {
                 select.setTimestamp(1, Timestamp.from(cutoff));
@@ -235,7 +236,8 @@ public class JdbcSagaStore implements SagaStore {
                     while (rows.next()) {
                         overdue.add(new Overdue(rows.getObject(1, UUID.class),
                                 rows.getString(2), rows.getInt(3), rows.getString(4),
-                                rows.getObject(5, UUID.class), rows.getString(6)));
+                                rows.getObject(5, UUID.class), rows.getString(6),
+                                rows.getObject(7, UUID.class)));
                     }
                 }
             }
@@ -248,7 +250,7 @@ public class JdbcSagaStore implements SagaStore {
                     // command on the wire, and the saga would compensate having never re-asked.
                     // The stored policy rides along so the re-command repeats the original
                     retries.add(new Retry(saga.id(), saga.email(), saga.policy(),
-                            saga.initiatedBy(), saga.retriesSoFar()));
+                            saga.initiatedBy(), saga.retriesSoFar(), saga.userId()));
                 } else {
                     // retries exhausted — give up, freeing the email for a future saga, and tell
                     // the caller who DID confirm so the failure can name the partial purge
@@ -260,7 +262,7 @@ public class JdbcSagaStore implements SagaStore {
                         if (update.executeUpdate() == 1) {
                             compensated.add(new Compensated(saga.id(), saga.email(),
                                     confirmedParticipants(connection, saga.id()),
-                                    saga.securitySagaId()));
+                                    saga.securitySagaId(), saga.userId()));
                         }
                     }
                 }
@@ -319,7 +321,7 @@ public class JdbcSagaStore implements SagaStore {
         List<PendingOutcome> pending = new ArrayList<>();
         try (Connection connection = dataSource.getConnection()) {
             try (PreparedStatement select = connection.prepareStatement(
-                    "SELECT id, email, state, security_saga_id, policy, initiated_by "
+                    "SELECT id, email, state, security_saga_id, policy, initiated_by, user_id "
                             + "FROM offboarding_sagas "
                             + "WHERE state IN ('COMPLETED', 'COMPENSATED') "
                             + "AND outcome_announced = FALSE AND updated_at < ?")) {
@@ -329,7 +331,7 @@ public class JdbcSagaStore implements SagaStore {
                         pending.add(new PendingOutcome(rows.getObject(1, UUID.class),
                                 rows.getString(2), rows.getString(3), Set.of(),
                                 rows.getObject(4, UUID.class), rows.getString(5),
-                                rows.getString(6)));
+                                rows.getString(6), rows.getObject(7, UUID.class)));
                     }
                 }
             }
@@ -340,7 +342,8 @@ public class JdbcSagaStore implements SagaStore {
                 withConfirmations.add("COMPENSATED".equals(outcome.state())
                         ? new PendingOutcome(outcome.sagaId(), outcome.email(), outcome.state(),
                         confirmedParticipants(connection, outcome.sagaId()),
-                        outcome.securitySagaId(), outcome.policy(), outcome.initiatedBy())
+                        outcome.securitySagaId(), outcome.policy(), outcome.initiatedBy(),
+                        outcome.userId())
                         : outcome);
             }
             return withConfirmations;
@@ -390,14 +393,14 @@ public class JdbcSagaStore implements SagaStore {
      * the closure was requested under (V7), which decides whether that rule may be honoured.
      */
     private record Target(UUID id, Optional<Set<String>> recordedParticipants,
-                          UUID securitySagaId, String policy, String initiatedBy) {
+                          UUID securitySagaId, String policy, String initiatedBy, UUID userId) {
     }
 
     private static Optional<Target> runningSaga(Connection connection, String email) throws SQLException {
         // running_email is the V2 latch column: set while STARTED, NULL after — so this is both
         // the lookup and the uniqueness the constraint enforces
         try (PreparedStatement select = connection.prepareStatement(
-                "SELECT id, required_participants, security_saga_id, policy, initiated_by "
+                "SELECT id, required_participants, security_saga_id, policy, initiated_by, user_id "
                         + "FROM offboarding_sagas "
                         + "WHERE running_email = ?")) {
             select.setString(1, email);
@@ -407,7 +410,7 @@ public class JdbcSagaStore implements SagaStore {
 
     private static Optional<Target> startedSaga(Connection connection, UUID sagaId) throws SQLException {
         try (PreparedStatement select = connection.prepareStatement(
-                "SELECT id, required_participants, security_saga_id, policy, initiated_by "
+                "SELECT id, required_participants, security_saga_id, policy, initiated_by, user_id "
                         + "FROM offboarding_sagas "
                         + "WHERE id = ? AND state = 'STARTED'")) {
             select.setObject(1, sagaId);
@@ -420,7 +423,7 @@ public class JdbcSagaStore implements SagaStore {
             return rows.next()
                     ? Optional.of(new Target(rows.getObject(1, UUID.class),
                     parsed(rows.getString(2)), rows.getObject(3, UUID.class), rows.getString(4),
-                    rows.getString(5)))
+                    rows.getString(5), rows.getObject(6, UUID.class)))
                     : Optional.empty();
         }
     }

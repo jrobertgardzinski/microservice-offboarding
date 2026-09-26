@@ -11,7 +11,12 @@ import java.util.UUID;
  * announcement can say which content is already gone (a partial purge is not a no-op), and
  * with security's handle on the deletion, which the failure verdict echoes.
  */
-public record Compensated(UUID sagaId, String email, Set<String> confirmed, UUID securitySagaId) {
+public record Compensated(UUID sagaId, String email, Set<String> confirmed, UUID securitySagaId,
+                          UUID userId) {
+    public Compensated(UUID sagaId, String email, Set<String> confirmed, UUID securitySagaId) {
+        this(sagaId, email, confirmed, securitySagaId, null);
+    }
+
     public Compensated(UUID sagaId, String email, Set<String> confirmed) {
         this(sagaId, email, confirmed, null);
     }

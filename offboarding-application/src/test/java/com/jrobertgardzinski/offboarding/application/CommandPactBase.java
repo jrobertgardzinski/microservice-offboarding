@@ -18,17 +18,20 @@ public final class CommandPactBase {
     private CommandPactBase() {
     }
 
+    /** The leaver's identity on security's fact; the commands copy it. */
+    static final String LEAVER_ID = "0b7c1c2e-5d3a-4f1b-9e8d-6a5b4c3d2e1f";
+
     public static String realPurgeCommand() {
         return RouterFixture.router().router.handle(Source.SECURITY,
                         "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                                + "\"email\":\"leaver@example.com\",\"version\":1}")
+                                + "\"email\":\"leaver@example.com\",\"userId\":\"" + LEAVER_ID + "\",\"version\":1}")
                 .get(0).payload();
     }
 
     public static String realPurgeCommandWithPolicy() {
         return RouterFixture.router().router.handle(Source.SECURITY,
                         "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                                + "\"email\":\"leaver@example.com\",\"initiatedBy\":\"ADMIN\","
+                                + "\"email\":\"leaver@example.com\",\"userId\":\"" + LEAVER_ID + "\",\"initiatedBy\":\"ADMIN\","
                                 + "\"policy\":{\"memes\":\"KEEP_POPULAR_ANONYMIZED:5\",\"comments\":\"DELETE\"},"
                                 + "\"version\":1}")
                 .get(0).payload();
@@ -45,7 +48,7 @@ public final class CommandPactBase {
         RouterFixture fixture = RouterFixture.router();
         fixture.router.handle(Source.SECURITY,
                 "{\"id\":\"" + UUID.randomUUID() + "\",\"type\":\"ACCOUNT_DELETION_REQUESTED\","
-                        + "\"email\":\"leaver@example.com\",\"initiatedBy\":\"ADMIN\","
+                        + "\"email\":\"leaver@example.com\",\"userId\":\"" + LEAVER_ID + "\",\"initiatedBy\":\"ADMIN\","
                         + "\"policy\":{\"memes\":\"KEEP_POPULAR_ANONYMIZED:100\","
                         + "\"comments\":\"ANONYMIZE_AUTHOR\"},"
                         + "\"version\":1}");
@@ -65,7 +68,8 @@ public final class CommandPactBase {
         RouterFixture fixture = RouterFixture.routerCapitulatingAtOnce();
         fixture.store.start(new com.jrobertgardzinski.offboarding.domain.Opening(
                         UUID.randomUUID(), "leaver@example.com", null, UUID.randomUUID(),
-                        java.util.Set.copyOf(RouterFixture.PARTICIPANT_BY_TOPIC.values())),
+                        java.util.Set.copyOf(RouterFixture.PARTICIPANT_BY_TOPIC.values()), null,
+                        UUID.fromString(LEAVER_ID)),
                 java.time.Instant.parse("2026-07-11T11:00:00Z"));
         return onCommands(fixture.router.sweepOverdue());
     }

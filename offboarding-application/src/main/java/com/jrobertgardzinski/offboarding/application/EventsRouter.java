@@ -212,7 +212,7 @@ public class EventsRouter {
             // fall back to the participants' defaults. countsRetryFor makes the loop charge
             // the retry counter only once this command is proven delivered — an undeliverable
             // re-command burns nothing and the next sweep simply offers the candidate again
-            out.add(purgeRetryCommand(retry.sagaId(), retry.email(), retry.policy(),
+            out.add(purgeRetryCommand(retry.sagaId(), retry.email(), retry.userId(), retry.policy(),
                     retry.initiatedBy(), retry.retriesSoFar()));
         }
         for (Compensated failed : swept.compensated()) {
@@ -225,8 +225,8 @@ public class EventsRouter {
             // the ones that confirmed: a mark whose confirmation was lost is still a mark
             // no policy and no basis: putting content BACK applies no rule, so neither field
             // has anything to decide here (the payload states SELF, the safe reading of null)
-            out.add(participantCommand(RESTORE_COMMAND, failed.sagaId(), failed.email(), null,
-                    null));
+            out.add(participantCommand(RESTORE_COMMAND, failed.sagaId(), failed.email(), failed.userId(),
+                    null, null));
             out.add(outcome(ClosureMessages.PORTAL_PURGE_FAILED, failed.email(), failed.sagaId(),
                     failed.securitySagaId(), failed.confirmed()));
         }
@@ -244,8 +244,8 @@ public class EventsRouter {
             // whereas losing a closure leaves content hidden for ever and nobody the wiser
             boolean completed = "COMPLETED".equals(pending.state());
             out.add(participantCommand(completed ? ERASE_COMMAND : RESTORE_COMMAND,
-                    pending.sagaId(), pending.email(), completed ? pending.policy() : null,
-                    pending.initiatedBy()));
+                    pending.sagaId(), pending.email(), pending.userId(),
+                    completed ? pending.policy() : null, pending.initiatedBy()));
             out.add(completed
                     ? outcome(ClosureMessages.PORTAL_CONTENT_PURGED, pending.email(), pending.sagaId(),
                     pending.securitySagaId(), null)
@@ -272,6 +272,7 @@ public class EventsRouter {
         Outcome<UUID> readFactId = fact.requiredUuid("id");
         Outcome<Optional<UUID>> readSecuritySagaId = fact.optionalUuid("sagaId");
         Outcome<Optional<JsonNode>> readPolicy = fact.objectWithin("policy", MAX_POLICY_BYTES);
+        Outcome<Optional<UUID>> readUserId = fact.optionalUuid(ClosureMessages.Field.USER_ID);
         List<String> refusals = Stream.of(readEmail, readFactId, readSecuritySagaId)
                 .flatMap(outcome -> outcome.errorCodes().stream()).toList();
         if (!refusals.isEmpty()) {
@@ -287,6 +288,12 @@ public class EventsRouter {
         String email = readEmail.findValue().orElseThrow();
         UUID factId = readFactId.findValue().orElseThrow();
         UUID securitySagaId = readSecuritySagaId.findValue().orElseThrow().orElse(null);
+        // the leaver's identity: absent on a fact from before the cutover, and a mangled one is
+        // read as absent rather than refused — the address still names the person
+        if (!readUserId.errorCodes().isEmpty()) {
+            LOG.warn("the userId on this deletion fact is not an id; going by the address ({})", fact.summary());
+        }
+        UUID userId = readUserId.findValue().orElse(Optional.empty()).orElse(null);
         // who asked, normalised: anything that is not exactly ADMIN is the account's own owner,
         // which is also the honest reading of a fact from before the field existed — until then
         // security had one deletion route and only the owner could walk it
@@ -294,7 +301,7 @@ public class EventsRouter {
         JsonNode policy = readPolicy.findValue().orElseThrow().orElse(null);
         String storedPolicy = policy == null ? null : write(policy);
         BeginOffboarding.Begun begun = begin.execute(factId, email, storedPolicy, securitySagaId,
-                initiatedBy, Instant.now(clock));
+                initiatedBy, userId, Instant.now(clock));
         if (begun.nothingToPurge()) {
             if (!begun.completedNow()) {
                 // the once-latch said no, and there are two ways it can: the fact is a replay and
@@ -314,7 +321,7 @@ public class EventsRouter {
         }
         LOG.info("commanding the content purge for {} (saga {}, requested by {})", Masked.address(email),
                 begun.sagaId(), initiatedBy);
-        return List.of(purgeCommand(begun.sagaId(), email, policy, initiatedBy));
+        return List.of(purgeCommand(begun.sagaId(), email, userId, policy, initiatedBy));
     }
 
     /**
@@ -364,15 +371,16 @@ public class EventsRouter {
         // portal is clean. Neither is marked announced until BOTH have reached the broker, so a
         // half-published pair is simply re-published by the next sweep.
         return List.of(
-                participantCommand(ERASE_COMMAND, landed.get().sagaId(), email,
+                participantCommand(ERASE_COMMAND, landed.get().sagaId(), email, landed.get().userId(),
                         landed.get().policy(), landed.get().initiatedBy()),
                 outcome(ClosureMessages.PORTAL_CONTENT_PURGED, email, landed.get().sagaId(),
                         landed.get().securitySagaId(), null));
     }
 
-    private Outgoing purgeCommand(UUID sagaId, String email, JsonNode policy, String initiatedBy) {
+    private Outgoing purgeCommand(UUID sagaId, String email, UUID userId, JsonNode policy,
+                                  String initiatedBy) {
         return new Outgoing(Destination.PARTICIPANTS, email,
-                commandPayload(MARK_COMMAND, sagaId, email, policy, initiatedBy));
+                commandPayload(MARK_COMMAND, sagaId, email, userId, policy, initiatedBy));
     }
 
     /**
@@ -388,10 +396,11 @@ public class EventsRouter {
      * <p>{@code partOfSaga} rather than {@code announcesSaga}: this event does not announce the
      * outcome, but it must share the outcome's fate at the outbox (see {@link Outgoing#command}).
      */
-    private Outgoing participantCommand(String type, UUID sagaId, String email, String storedPolicy,
-                                        String initiatedBy) {
+    private Outgoing participantCommand(String type, UUID sagaId, String email, UUID userId,
+                                        String storedPolicy, String initiatedBy) {
         return Outgoing.command(Destination.PARTICIPANTS, email,
-                commandPayload(type, sagaId, email, storedPolicy(sagaId, storedPolicy), initiatedBy),
+                commandPayload(type, sagaId, email, userId, storedPolicy(sagaId, storedPolicy),
+                        initiatedBy),
                 sagaId);
     }
 
@@ -401,10 +410,10 @@ public class EventsRouter {
      * saga — plus the {@code countsRetryFor} mark that lets the loop charge the retry counter
      * only after the broker demonstrably accepted it.
      */
-    private Outgoing purgeRetryCommand(UUID sagaId, String email, String storedPolicy,
+    private Outgoing purgeRetryCommand(UUID sagaId, String email, UUID userId, String storedPolicy,
                                        String initiatedBy, int retriesSoFar) {
         return new Outgoing(Destination.PARTICIPANTS, email,
-                commandPayload(MARK_COMMAND, sagaId, email, storedPolicy(sagaId, storedPolicy),
+                commandPayload(MARK_COMMAND, sagaId, email, userId, storedPolicy(sagaId, storedPolicy),
                         initiatedBy),
                 null, new RetryCharge(sagaId, retriesSoFar));
     }
@@ -424,7 +433,7 @@ public class EventsRouter {
         }
     }
 
-    private String commandPayload(String type, UUID sagaId, String email, JsonNode policy,
+    private String commandPayload(String type, UUID sagaId, String email, UUID userId, JsonNode policy,
                                   String initiatedBy) {
         ObjectNode command = mapper.createObjectNode()
                 .put("id", UUID.randomUUID().toString())
@@ -439,6 +448,10 @@ public class EventsRouter {
                         initiatedBy == null ? ClosureInitiator.SELF.wire() : initiatedBy)
                 // envelope version (workspace ADR 0004): fields only ever added within version 1
                 .put("version", 1);
+        if (userId != null) {
+            // the leaver's identity, copied from security's fact onto all three commands
+            command.put(ClosureMessages.Field.USER_ID, userId.toString());
+        }
         if (policy != null && policy.isObject()) {
             command.set("policy", policy);   // the leaver's choices, ferried untouched
         }

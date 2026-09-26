@@ -64,6 +64,10 @@ jobs:
       # every participant, so that none of the five spells the agreement on its own
       - uses: actions/checkout@v7
         with:
+          repository: jrobertgardzinski/user-id
+          path: user-id
+      - uses: actions/checkout@v7
+        with:
           repository: jrobertgardzinski/account-closure
           path: account-closure
       - name: Set up JDK 25
@@ -77,6 +81,7 @@ jobs:
           mvn -B -q --no-transfer-progress -f observation/pom.xml install -DskipTests
           mvn -B -q --no-transfer-progress -f libs/pom.xml install -DskipTests
           mvn -B -q --no-transfer-progress -f envelope/pom.xml install -DskipTests
+          mvn -B -q --no-transfer-progress -f user-id/pom.xml install -DskipTests
           mvn -B -q --no-transfer-progress -f account-closure/pom.xml install -DskipTests
       - name: Build and test (including pact provider verification)
         run: mvn -B --no-transfer-progress -f portal/microservice-offboarding/pom.xml clean verify

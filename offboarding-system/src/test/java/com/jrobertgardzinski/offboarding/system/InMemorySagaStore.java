@@ -50,6 +50,8 @@ public class InMemorySagaStore implements SagaStore {
         public final Set<String> requiredParticipants;
         /** Who asked for the closure — decides whether the policy may be honoured (see V7). */
         public String initiatedBy;
+        /** The leaver's identity as security stated it; null on a saga opened by an older fact. */
+        public final UUID userId;
 
         Saga(UUID factId, String email, String policy, UUID securitySagaId,
              Set<String> requiredParticipants, Instant createdAt) {
@@ -64,6 +66,12 @@ public class InMemorySagaStore implements SagaStore {
 
         Saga(UUID id, UUID factId, String email, String policy, UUID securitySagaId,
              Set<String> requiredParticipants, Instant createdAt, String initiatedBy) {
+            this(id, factId, email, policy, securitySagaId, requiredParticipants, createdAt, initiatedBy, null);
+        }
+
+        Saga(UUID id, UUID factId, String email, String policy, UUID securitySagaId,
+             Set<String> requiredParticipants, Instant createdAt, String initiatedBy, UUID userId) {
+            this.userId = userId;
             this.initiatedBy = initiatedBy;
             this.id = id;
             this.factId = factId;
@@ -112,7 +120,8 @@ public class InMemorySagaStore implements SagaStore {
             return running.get().id;
         }
         Saga saga = new Saga(UUID.randomUUID(), opening.factId(), opening.email(), opening.policy(),
-                opening.securitySagaId(), opening.participants(), at, opening.initiatedBy());
+                opening.securitySagaId(), opening.participants(), at, opening.initiatedBy(),
+                opening.userId());
         sagas.put(saga.id, saga);
         sagaByFact.put(saga.factId, saga.id);
         return saga.id;
@@ -138,9 +147,11 @@ public class InMemorySagaStore implements SagaStore {
                 saga.updatedAt = at;
                 // the policy rides back out with the completing confirmation: the caller sends
                 // the CLOSURE command next, and that is what carries it to the participants
-                return new Recorded(saga.id, saga.securitySagaId, true, saga.policy, saga.initiatedBy);
+                return new Recorded(saga.id, saga.securitySagaId, true, saga.policy, saga.initiatedBy,
+                        saga.userId);
             }
-            return new Recorded(saga.id, saga.securitySagaId, false, saga.policy, saga.initiatedBy);
+            return new Recorded(saga.id, saga.securitySagaId, false, saga.policy, saga.initiatedBy,
+                    saga.userId);
         });
     }
 
@@ -171,12 +182,12 @@ public class InMemorySagaStore implements SagaStore {
                     // re-command reached the broker — mirrors the JDBC adapter. The stored
                     // policy rides along so the re-command repeats the original
                     retries.add(new Retry(saga.id, saga.email, saga.policy, saga.initiatedBy,
-                            saga.retries));
+                            saga.retries, saga.userId));
                 } else {
                     saga.state = "COMPENSATED";
                     saga.updatedAt = at;
                     compensated.add(new Compensated(saga.id, saga.email, Set.copyOf(saga.confirmed),
-                            saga.securitySagaId));
+                            saga.securitySagaId, saga.userId));
                 }
             }
         }
@@ -212,7 +223,7 @@ public class InMemorySagaStore implements SagaStore {
                 .filter(saga -> saga.finished() && !saga.announced && saga.updatedAt.isBefore(olderThan))
                 .map(saga -> new PendingOutcome(saga.id, saga.email, saga.state,
                         "COMPENSATED".equals(saga.state) ? Set.copyOf(saga.confirmed) : Set.<String>of(),
-                        saga.securitySagaId, saga.policy, saga.initiatedBy))
+                        saga.securitySagaId, saga.policy, saga.initiatedBy, saga.userId))
                 .toList();
     }
 

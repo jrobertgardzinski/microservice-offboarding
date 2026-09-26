@@ -9,7 +9,8 @@
         "id": "e2490de5-5bd3-43d5-b7c4-526e33f71304",
         "initiatedBy": "SELF",
         "sagaId": "e2490de5-5bd3-43d5-b7c4-526e33f71304",
-        "type": "ACCOUNT_DELETION_REQUESTED"
+        "type": "ACCOUNT_DELETION_REQUESTED",
+        "userId": "e2490de5-5bd3-43d5-b7c4-526e33f71304"
       },
       "description": "an account deletion requested fact",
       "generators": {
@@ -18,6 +19,9 @@
             "type": "Uuid"
           },
           "$.sagaId": {
+            "type": "Uuid"
+          },
+          "$.userId": {
             "type": "Uuid"
           }
         }
@@ -49,6 +53,15 @@
                 "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
               }
             ]
+          },
+          "$.userId": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+              }
+            ]
           }
         }
       },
@@ -66,7 +79,8 @@
           "memes": "KEEP_POPULAR_ANONYMIZED:100"
         },
         "sagaId": "e2490de5-5bd3-43d5-b7c4-526e33f71304",
-        "type": "ACCOUNT_DELETION_REQUESTED"
+        "type": "ACCOUNT_DELETION_REQUESTED",
+        "userId": "e2490de5-5bd3-43d5-b7c4-526e33f71304"
       },
       "description": "an account deletion requested fact with policy choices",
       "generators": {
@@ -75,6 +89,9 @@
             "type": "Uuid"
           },
           "$.sagaId": {
+            "type": "Uuid"
+          },
+          "$.userId": {
             "type": "Uuid"
           }
         }
@@ -115,6 +132,15 @@
             ]
           },
           "$.sagaId": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+              }
+            ]
+          },
+          "$.userId": {
             "combine": "AND",
             "matchers": [
               {

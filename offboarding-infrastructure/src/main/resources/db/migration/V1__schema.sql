@@ -5,6 +5,8 @@ CREATE TABLE offboarding_sagas (
     id                    UUID PRIMARY KEY,
     fact_id               UUID         NOT NULL UNIQUE,
     email                 VARCHAR(255) NOT NULL,
+    -- the leaver's identity as security stated it; NULL for a saga opened by a fact without one
+    user_id               UUID,
     state                 VARCHAR(20)  NOT NULL,
     created_at            TIMESTAMP    NOT NULL,
     updated_at            TIMESTAMP    NOT NULL,

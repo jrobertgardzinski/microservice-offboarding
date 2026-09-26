@@ -14,7 +14,12 @@ import java.util.UUID;
  * command and the outcome are published — and withheld — together.
  */
 public record PendingOutcome(UUID sagaId, String email, String state, Set<String> confirmed,
-                      UUID securitySagaId, String policy, String initiatedBy) {
+                      UUID securitySagaId, String policy, String initiatedBy, UUID userId) {
+    public PendingOutcome(UUID sagaId, String email, String state, Set<String> confirmed,
+                          UUID securitySagaId, String policy, String initiatedBy) {
+        this(sagaId, email, state, confirmed, securitySagaId, policy, initiatedBy, null);
+    }
+
     public PendingOutcome(UUID sagaId, String email, String state, Set<String> confirmed) {
         this(sagaId, email, state, confirmed, null, null, null);
     }

@@ -65,8 +65,14 @@ public class BeginOffboarding {
      */
     public Begun execute(UUID factId, String email, String policy, UUID securitySagaId,
                          String initiatedBy, Instant at) {
+        return execute(factId, email, policy, securitySagaId, initiatedBy, null, at);
+    }
+
+    /** {@code userId} is the leaver's identity as security stated it, or null on an older fact. */
+    public Begun execute(UUID factId, String email, String policy, UUID securitySagaId,
+                         String initiatedBy, UUID userId, Instant at) {
         UUID sagaId = sagas.start(new Opening(factId, email, policy, securitySagaId,
-                participants, initiatedBy), at);
+                participants, initiatedBy, userId), at);
         if (participants.isEmpty()) {
             // the saga this call just opened or joined, BY ID: complete(email) settled whichever
             // saga was running for the address, so a replayed fact whose own saga finished could

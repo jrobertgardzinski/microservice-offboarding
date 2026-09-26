@@ -49,6 +49,8 @@ class DeletionRequestContractTest {
                         // instead of matching it to the address
                         .uuid("sagaId")
                         .stringType("email", "leaver@example.com")
+                        // the leaver's identity, which every command copies for the participants
+                        .uuid("userId")
                         // WHO asked, which is what this consumer ferries onto every command it
                         // sends: the content services honour a rule only for an administrator's
                         // closure, and read anything else as the account owner's own request
@@ -67,6 +69,7 @@ class DeletionRequestContractTest {
                         // instead of matching it to the address
                         .uuid("sagaId")
                         .stringType("email", "leaver@example.com")
+                        .uuid("userId")
                         // ADMIN, because an administrator's is the only closure that states
                         // choices at all — security drops a leaver's before the fact is built
                         .stringValue("initiatedBy", "ADMIN")
@@ -88,6 +91,8 @@ class DeletionRequestContractTest {
         assertTrue(out.get(0).payload().contains("\"PURGE_USER_CONTENT\""));
         assertTrue(out.get(0).payload().contains("\"initiatedBy\":\"SELF\""),
                 "the basis rides every command, not only the closure: " + out.get(0).payload());
+        assertTrue(out.get(0).payload().contains("\"userId\":\""),
+                "the leaver's id rides the command: " + out.get(0).payload());
     }
 
     @Test

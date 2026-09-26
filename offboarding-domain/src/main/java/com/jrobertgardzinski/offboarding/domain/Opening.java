@@ -20,11 +20,17 @@ import java.util.UUID;
  * and then completeness falls back to the caller's configuration, exactly as it used to.
  */
 public record Opening(UUID factId, String email, String policy, UUID securitySagaId,
-               Set<String> participants, String initiatedBy) {
+               Set<String> participants, String initiatedBy, UUID userId) {
 
     /** The pre-initiator spelling, for callers and tests with no basis to record. */
     public Opening(UUID factId, String email, String policy, UUID securitySagaId,
                    Set<String> participants) {
         this(factId, email, policy, securitySagaId, participants, null);
+    }
+
+    /** A fact from before the leaver's id travelled with it. */
+    public Opening(UUID factId, String email, String policy, UUID securitySagaId,
+                   Set<String> participants, String initiatedBy) {
+        this(factId, email, policy, securitySagaId, participants, initiatedBy, null);
     }
 }

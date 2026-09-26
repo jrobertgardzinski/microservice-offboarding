@@ -68,6 +68,29 @@ class JdbcSagaStoreTest {
     }
 
     @Test
+    void the_leavers_id_rides_every_way_out_of_the_store() {
+        UUID leaver = UUID.randomUUID();
+        UUID saga = store.start(new Opening(UUID.randomUUID(), "alice@example.com", null, null,
+                Set.of("memes"), "SELF", leaver), T0);
+
+        Recorded recorded = store.confirm("alice@example.com", saga, "memes", Set.of("memes"),
+                T0.plusSeconds(1)).orElseThrow();
+        assertEquals(leaver, recorded.userId(), "the closure command needs it");
+        assertEquals(List.of(leaver), store.unannouncedOutcomes(T0.plusSeconds(60)).stream()
+                .map(PendingOutcome::userId).toList(), "a re-announced closure needs it too");
+
+        UUID overdue = store.start(new Opening(UUID.randomUUID(), "bob@example.com", null, null,
+                Set.of("memes"), "SELF", leaver), T0);
+        SweepResult swept = store.sweepOverdue(T0.plusSeconds(TIMEOUT + 1), 1, T0.plusSeconds(TIMEOUT + 1));
+        assertEquals(List.of(new Retry(overdue, "bob@example.com", null, "SELF", 0, leaver)), swept.retries(),
+                "the re-command needs it");
+        assertTrue(store.retryDelivered(overdue, 0, T0.plusSeconds(TIMEOUT + 1)));
+        swept = store.sweepOverdue(T0.plusSeconds(2 * TIMEOUT + 3), 1, T0.plusSeconds(2 * TIMEOUT + 3));
+        assertEquals(List.of(new Compensated(overdue, "bob@example.com", Set.of(), null, leaver)),
+                swept.compensated(), "and so does the compensation");
+    }
+
+    @Test
     void a_replayed_fact_finds_its_saga_even_after_completion() {
         UUID fact = UUID.randomUUID();
         UUID first = store.start(fact, "alice@example.com", T0);
