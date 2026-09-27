@@ -84,10 +84,13 @@ overdue sagas (you'd need a second cron trigger, or `minReplicas: 1`, which defe
 
 ## Contracts (Pact, file mode — workspace ADR 0003)
 
-As a **consumer** this service pins (committed in `pacts/`): security's deletion fact (id, email,
-optional policy) and each participant's purge confirmation (type, email). As a **provider** it is
-verified against the participants' command pacts and security's outcome pact — from sibling
-checkouts; skipped, not failed, when a sibling is absent.
+As a **consumer** this service pins (committed in `pacts/`): security's deletion fact
+(`sagaId`, `id`, `userId`, `email`, `initiatedBy`, policy optional) and each participant's purge
+confirmation (`sagaId`, `type`, `userId`). The leaver in both is the `userId` — a confirmation
+carries no address at all, and the fact's `email` rides along only because the farewell mail and
+security's own verdict need something to write to. As a **provider** it is verified against the
+participants' command pacts and security's outcome pact — from sibling checkouts; skipped, not
+failed, when a sibling is absent.
 
 ## Run & test
 
