@@ -1,6 +1,6 @@
 package com.jrobertgardzinski.offboarding.application;
 
-import com.jrobertgardzinski.offboarding.system.InMemorySagaStore;
+import com.jrobertgardzinski.offboarding.system.FakeSagaStore;
 import com.jrobertgardzinski.offboarding.application.Destination;
 import com.jrobertgardzinski.offboarding.application.Source;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,7 +38,7 @@ class OutcomeOutboxTest {
     private static final String FACTS = "security-events";
     private static final Map<String, String> TOPICS = Map.of("memes-events", "memes");
 
-    private final InMemorySagaStore store = new InMemorySagaStore();
+    private final FakeSagaStore store = new FakeSagaStore();
     private final EventsRouter router;
     private Instant now = Instant.parse("2026-07-11T12:00:00Z");
 

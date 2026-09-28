@@ -1,6 +1,6 @@
 package com.jrobertgardzinski.offboarding.application;
 
-import com.jrobertgardzinski.offboarding.system.InMemorySagaStore;
+import com.jrobertgardzinski.offboarding.system.FakeSagaStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jrobertgardzinski.offboarding.system.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.system.RecordConfirmation;
@@ -23,7 +23,7 @@ public final class RouterFixture {
             "comments-events", "comments",
             "usercollections-events", "collections");
 
-    public final InMemorySagaStore store = new InMemorySagaStore();
+    public final FakeSagaStore store = new FakeSagaStore();
     public final EventsRouter router;
 
     private RouterFixture(int maxRetries) {

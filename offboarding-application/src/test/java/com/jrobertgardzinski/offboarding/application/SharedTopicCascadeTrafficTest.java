@@ -1,6 +1,6 @@
 package com.jrobertgardzinski.offboarding.application;
 
-import com.jrobertgardzinski.offboarding.system.InMemorySagaStore;
+import com.jrobertgardzinski.offboarding.system.FakeSagaStore;
 import com.jrobertgardzinski.offboarding.application.Source;
 import io.qameta.allure.Epic;
 import io.qameta.allure.Feature;
@@ -60,7 +60,7 @@ class SharedTopicCascadeTrafficTest {
                 fixture.router.handle(Source.participant("comments"), commentsDeleted(UUID.randomUUID().toString()));
 
         assertEquals(List.of(), out, "the cascade's announcement is not addressed to the saga");
-        InMemorySagaStore.Saga saga = fixture.store.all().get(0);
+        FakeSagaStore.Saga saga = fixture.store.all().get(0);
         assertTrue(saga.confirmed.isEmpty(),
                 "comments announced a dropped THREAD, not a purged ACCOUNT — nothing may be "
                         + "recorded against the saga");

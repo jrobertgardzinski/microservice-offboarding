@@ -27,7 +27,7 @@ import java.util.UUID;
  * <p>Published in this module's test-jar so the boundary tests, which drive the real loop against
  * a real broker, can still use one store instead of growing a second copy.
  * The test double: the same transition semantics as the JDBC store, in two maps. */
-public class InMemorySagaStore implements SagaStore {
+public class FakeSagaStore implements SagaStore {
 
     /** One saga's mutable progress — package-visible for the tests' state fingerprints. */
     public static final class Saga {

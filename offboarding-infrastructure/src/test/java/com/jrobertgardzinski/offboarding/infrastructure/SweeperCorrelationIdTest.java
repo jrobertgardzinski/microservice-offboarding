@@ -5,7 +5,7 @@ import com.jrobertgardzinski.offboarding.application.Destination;
 import com.jrobertgardzinski.offboarding.application.EventsRouter;
 import com.jrobertgardzinski.offboarding.domain.Opening;
 import com.jrobertgardzinski.offboarding.system.BeginOffboarding;
-import com.jrobertgardzinski.offboarding.system.InMemorySagaStore;
+import com.jrobertgardzinski.offboarding.system.FakeSagaStore;
 import com.jrobertgardzinski.offboarding.system.RecordConfirmation;
 import com.jrobertgardzinski.offboarding.system.SweepOverdue;
 import io.qameta.allure.Epic;
@@ -44,7 +44,7 @@ class SweeperCorrelationIdTest {
         // content back went out with no trace at all: an operator following the verdict's id sees
         // the participants' restore logs and nothing linking the command that caused them — and if
         // the restore is what went missing, the one hop that would prove it was sent has no id
-        InMemorySagaStore store = new InMemorySagaStore();
+        FakeSagaStore store = new FakeSagaStore();
         UUID saga = store.start(new Opening(UUID.randomUUID(), LEAVER, null, null,
                 Set.of("memes")), T0);
         List<EventsRouter.Outgoing> swept = capitulatingSweepOver(store);
@@ -63,7 +63,7 @@ class SweeperCorrelationIdTest {
     }
 
     /** One sweeper pass over a saga nobody ever confirmed, with the retries already spent. */
-    private static List<EventsRouter.Outgoing> capitulatingSweepOver(InMemorySagaStore store) {
+    private static List<EventsRouter.Outgoing> capitulatingSweepOver(FakeSagaStore store) {
         Set<String> participants = Set.of("memes");
         EventsRouter router = new EventsRouter(
                 new BeginOffboarding(store, participants),

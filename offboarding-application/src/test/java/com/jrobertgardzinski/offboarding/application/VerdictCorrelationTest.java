@@ -1,6 +1,6 @@
 package com.jrobertgardzinski.offboarding.application;
 
-import com.jrobertgardzinski.offboarding.system.InMemorySagaStore;
+import com.jrobertgardzinski.offboarding.system.FakeSagaStore;
 import com.jrobertgardzinski.offboarding.application.Destination;
 import com.jrobertgardzinski.offboarding.application.Source;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -48,7 +48,7 @@ class VerdictCorrelationTest {
     private static final String LEAVER = "leaver@example.com";
 
     private final ObjectMapper mapper = new ObjectMapper();
-    private final InMemorySagaStore store = new InMemorySagaStore();
+    private final FakeSagaStore store = new FakeSagaStore();
     private final EventsRouter router;
     private Instant now = Instant.parse("2026-07-11T12:00:00Z");
 

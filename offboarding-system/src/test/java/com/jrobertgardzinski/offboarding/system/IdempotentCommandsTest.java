@@ -3,7 +3,7 @@ package com.jrobertgardzinski.offboarding.system;
 import com.jrobertgardzinski.offboarding.system.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.system.RecordConfirmation;
 import com.jrobertgardzinski.offboarding.system.SweepOverdue;
-import com.jrobertgardzinski.offboarding.system.InMemorySagaStore;
+import com.jrobertgardzinski.offboarding.system.FakeSagaStore;
 import io.qameta.allure.Epic;
 import io.qameta.allure.Feature;
 import org.junit.jupiter.api.DynamicTest;
@@ -44,10 +44,10 @@ class IdempotentCommandsTest {
     private static final java.util.UUID CAROL_FACT =
             java.util.UUID.fromString("00000000-0000-0000-0000-0000000ca201");
 
-    private static final Map<String, Consumer<InMemorySagaStore>> COMMANDS = commands();
+    private static final Map<String, Consumer<FakeSagaStore>> COMMANDS = commands();
 
-    private static Map<String, Consumer<InMemorySagaStore>> commands() {
-        Map<String, Consumer<InMemorySagaStore>> c = new LinkedHashMap<>();
+    private static Map<String, Consumer<FakeSagaStore>> commands() {
+        Map<String, Consumer<FakeSagaStore>> c = new LinkedHashMap<>();
         c.put("begin a fresh offboarding",
                 store -> new BeginOffboarding(store, PARTICIPANTS).execute(CAROL_FACT, "carol@example.com", null, null, null, idOf("carol@example.com"), T0));
         c.put("begin over an already-running saga",
@@ -73,15 +73,15 @@ class IdempotentCommandsTest {
     }
 
     /** A saga already running for alice, with memes confirmed. */
-    private static InMemorySagaStore seeded() {
-        InMemorySagaStore store = new InMemorySagaStore();
+    private static FakeSagaStore seeded() {
+        FakeSagaStore store = new FakeSagaStore();
         new BeginOffboarding(store, PARTICIPANTS).execute(ALICE_FACT, "alice@example.com", null, null, null, idOf("alice@example.com"), T0);
         new RecordConfirmation(store, PARTICIPANTS).execute(idOf("alice@example.com"), null, "memes", T0);
         return store;
     }
 
     /** The observable state, flattened — what "the same state" means in the law. */
-    private static List<String> fingerprint(InMemorySagaStore store) {
+    private static List<String> fingerprint(FakeSagaStore store) {
         return store.all().stream()
                 .map(saga -> saga.email + "|" + saga.state + "|" + new TreeSet<>(saga.confirmed))
                 .sorted()
@@ -92,10 +92,10 @@ class IdempotentCommandsTest {
     Stream<DynamicTest> every_command_twice_equals_once() {
         return COMMANDS.entrySet().stream().map(entry -> DynamicTest.dynamicTest(
                 entry.getKey(), () -> {
-                    InMemorySagaStore once = seeded();
+                    FakeSagaStore once = seeded();
                     entry.getValue().accept(once);
 
-                    InMemorySagaStore twice = seeded();
+                    FakeSagaStore twice = seeded();
                     entry.getValue().accept(twice);
                     entry.getValue().accept(twice);
 

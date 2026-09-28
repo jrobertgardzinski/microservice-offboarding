@@ -8,7 +8,7 @@ import com.jrobertgardzinski.offboarding.system.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.system.RecordConfirmation;
 import com.jrobertgardzinski.offboarding.system.SweepOverdue;
 import com.jrobertgardzinski.offboarding.application.EventsRouter;
-import com.jrobertgardzinski.offboarding.system.InMemorySagaStore;
+import com.jrobertgardzinski.offboarding.system.FakeSagaStore;
 import io.cucumber.java.Before;
 import io.cucumber.java.en.Given;
 import io.cucumber.java.en.Then;
@@ -38,7 +38,7 @@ public class OffboardingSteps {
     private static final Duration TIMEOUT = Duration.ofMinutes(2);
 
     private final ObjectMapper mapper = new ObjectMapper();
-    private InMemorySagaStore store;
+    private FakeSagaStore store;
     private EventsRouter router;
     private Instant now;
     private final List<EventsRouter.Outgoing> announced = new ArrayList<>();
@@ -46,7 +46,7 @@ public class OffboardingSteps {
     @Before
     public void wire() {
         now = Instant.parse("2026-07-11T12:00:00Z");
-        store = new InMemorySagaStore();
+        store = new FakeSagaStore();
         withParticipants(Map.of(
                 "memes-events", "memes",
                 "comments-events", "comments",

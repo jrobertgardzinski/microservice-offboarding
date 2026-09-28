@@ -33,7 +33,7 @@ class NothingToPurgeTest {
         // waiting for. A replay of an old fact — at-least-once delivery makes that routine —
         // therefore closed the case that had just opened, the portal announced it purged, security
         // deleted the account and no participant was ever told to erase anything.
-        InMemorySagaStore store = new InMemorySagaStore();
+        FakeSagaStore store = new FakeSagaStore();
         BeginOffboarding withoutParticipants = new BeginOffboarding(store, Set.of());
         UUID firstFact = UUID.randomUUID();
 
@@ -63,7 +63,7 @@ class NothingToPurgeTest {
         // the other half: the saga is not a replay at all, it is the running case this fact JOINS.
         // Its quorum was recorded when it opened (V6), and a pod that came up with an empty
         // participant set may not redefine completeness for a case already under way
-        InMemorySagaStore store = new InMemorySagaStore();
+        FakeSagaStore store = new FakeSagaStore();
         BeginOffboarding.Begun underWay = new BeginOffboarding(store, THREE)
                 .execute(UUID.randomUUID(), ALICE, T0);
 
@@ -75,7 +75,7 @@ class NothingToPurgeTest {
         assertEquals("STARTED", state(store, underWay.sagaId()));
     }
 
-    private static String state(InMemorySagaStore store, UUID sagaId) {
+    private static String state(FakeSagaStore store, UUID sagaId) {
         return store.all().stream().filter(saga -> saga.id.equals(sagaId)).findFirst()
                 .orElseThrow().state;
     }
