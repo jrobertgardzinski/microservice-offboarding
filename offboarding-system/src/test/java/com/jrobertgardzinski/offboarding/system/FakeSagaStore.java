@@ -255,6 +255,20 @@ public class FakeSagaStore implements SagaStore {
         return saga.id;
     }
 
+    /**
+     * Test seeding only, and the one thing a ROLLBACK needs: the row is gone, and so is the fact's
+     * claim on it, so a redelivery of that fact opens the case again.
+     *
+     * <p>The JDBC twin has no such method and needs none — a transaction that does not commit takes
+     * the INSERT with it. This class is the transaction as well as the table, so a consumer that
+     * stages a failed unit of work over it (portal-specs' races layer) has no other way to put the
+     * table back the way it found it.
+     */
+    public void forget(UUID sagaId) {
+        sagas.remove(sagaId);
+        sagaByFact.values().removeIf(sagaId::equals);
+    }
+
     /** The observable state, for the generic idempotence test's fingerprints. */
     public List<Saga> all() {
         return new ArrayList<>(sagas.values());
