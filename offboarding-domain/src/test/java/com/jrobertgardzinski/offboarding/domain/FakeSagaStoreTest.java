@@ -1,4 +1,4 @@
-package com.jrobertgardzinski.offboarding.system;
+package com.jrobertgardzinski.offboarding.domain;
 
 import io.qameta.allure.Epic;
 import io.qameta.allure.Feature;

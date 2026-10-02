@@ -1,6 +1,6 @@
 package com.jrobertgardzinski.offboarding.application;
 
-import com.jrobertgardzinski.offboarding.system.FakeSagaStore;
+import com.jrobertgardzinski.offboarding.domain.FakeSagaStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jrobertgardzinski.offboarding.system.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.system.RecordConfirmation;

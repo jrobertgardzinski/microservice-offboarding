@@ -1,10 +1,5 @@
-package com.jrobertgardzinski.offboarding.system;
+package com.jrobertgardzinski.offboarding.domain;
 
-import com.jrobertgardzinski.offboarding.domain.Opening;
-import com.jrobertgardzinski.offboarding.domain.PendingOutcome;
-import com.jrobertgardzinski.offboarding.domain.Recorded;
-import com.jrobertgardzinski.offboarding.domain.Retry;
-import com.jrobertgardzinski.offboarding.domain.SweepResult;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;

@@ -1,11 +1,4 @@
-package com.jrobertgardzinski.offboarding.system;
-
-import com.jrobertgardzinski.offboarding.domain.Compensated;
-import com.jrobertgardzinski.offboarding.domain.Opening;
-import com.jrobertgardzinski.offboarding.domain.PendingOutcome;
-import com.jrobertgardzinski.offboarding.domain.Recorded;
-import com.jrobertgardzinski.offboarding.domain.Retry;
-import com.jrobertgardzinski.offboarding.domain.SweepResult;
+package com.jrobertgardzinski.offboarding.domain;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

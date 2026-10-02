@@ -1,5 +1,6 @@
 package com.jrobertgardzinski.offboarding.system;
 
+import com.jrobertgardzinski.offboarding.domain.SagaStore;
 import com.jrobertgardzinski.offboarding.domain.Opening;
 import java.time.Instant;
 import java.util.Set;

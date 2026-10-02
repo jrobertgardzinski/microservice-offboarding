@@ -42,6 +42,14 @@
             <artifactId>envelope</artifactId>
             <version>1.0.0-SNAPSHOT</version>
         </dependency>
+        <dependency>
+            <!-- SagaStore's fake and contract, now beside the port -->
+            <groupId>com.jrobertgardzinski</groupId>
+            <artifactId>offboarding-domain</artifactId>
+            <version>1.0.0-SNAPSHOT</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

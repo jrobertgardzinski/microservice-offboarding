@@ -1,7 +1,7 @@
 package com.jrobertgardzinski.offboarding.infrastructure;
 
-import com.jrobertgardzinski.offboarding.system.SagaStore;
-import com.jrobertgardzinski.offboarding.system.SagaStoreContractTest;
+import com.jrobertgardzinski.offboarding.domain.SagaStore;
+import com.jrobertgardzinski.offboarding.domain.SagaStoreContractTest;
 
 import io.qameta.allure.Epic;
 import io.qameta.allure.Feature;

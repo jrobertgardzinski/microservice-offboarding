@@ -18,7 +18,7 @@ import com.jrobertgardzinski.offboarding.system.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.system.RecordConfirmation;
 import com.jrobertgardzinski.offboarding.domain.Observation;
 import com.jrobertgardzinski.observation.Observations;
-import com.jrobertgardzinski.offboarding.system.SagaStore;
+import com.jrobertgardzinski.offboarding.domain.SagaStore;
 import com.jrobertgardzinski.offboarding.system.SweepOverdue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -90,7 +90,7 @@ public class EventsRouter {
      * The retry counter's address: the saga to charge, and the count the sweep offered the
      * candidate at. Both, because the charge is conditional on the round it pays for — two
      * sweepers holding the same overdue saga must not buy two retries with one re-command (see
-     * {@link com.jrobertgardzinski.offboarding.system.SagaStore#retryDelivered}).
+     * {@link com.jrobertgardzinski.offboarding.domain.SagaStore#retryDelivered}).
      */
     public record RetryCharge(UUID sagaId, int retriesSoFar) {
     }
@@ -100,7 +100,7 @@ public class EventsRouter {
      * saga's outcome, {@code announcesSaga} names it so the loop can mark the outbox after a
      * successful flush; when it is the sweeper RE-commanding an overdue purge,
      * {@code countsRetryFor} names the saga whose retry counter the loop charges once the send is
-     * proven delivered ({@link com.jrobertgardzinski.offboarding.system.SagaStore#retryDelivered}).
+     * proven delivered ({@link com.jrobertgardzinski.offboarding.domain.SagaStore#retryDelivered}).
      * Everything else leaves both null.
      */
     public record Outgoing(Destination destination, String key, String payload, UUID announcesSaga,

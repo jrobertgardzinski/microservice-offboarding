@@ -1,6 +1,6 @@
 package com.jrobertgardzinski.offboarding.application;
 
-import com.jrobertgardzinski.offboarding.system.FakeSagaStore;
+import com.jrobertgardzinski.offboarding.domain.FakeSagaStore;
 import com.jrobertgardzinski.offboarding.application.Destination;
 import com.jrobertgardzinski.offboarding.application.Source;
 import com.fasterxml.jackson.databind.JsonNode;

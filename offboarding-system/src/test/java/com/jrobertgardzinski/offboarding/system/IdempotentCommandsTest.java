@@ -3,7 +3,7 @@ package com.jrobertgardzinski.offboarding.system;
 import com.jrobertgardzinski.offboarding.system.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.system.RecordConfirmation;
 import com.jrobertgardzinski.offboarding.system.SweepOverdue;
-import com.jrobertgardzinski.offboarding.system.FakeSagaStore;
+import com.jrobertgardzinski.offboarding.domain.FakeSagaStore;
 import io.qameta.allure.Epic;
 import io.qameta.allure.Feature;
 import org.junit.jupiter.api.DynamicTest;

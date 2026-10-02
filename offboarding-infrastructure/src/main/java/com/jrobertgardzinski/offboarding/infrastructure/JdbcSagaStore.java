@@ -8,7 +8,7 @@ import com.jrobertgardzinski.offboarding.domain.PendingOutcome;
 import com.jrobertgardzinski.offboarding.domain.Recorded;
 import com.jrobertgardzinski.offboarding.domain.Retry;
 import com.jrobertgardzinski.offboarding.domain.SweepResult;
-import com.jrobertgardzinski.offboarding.system.SagaStore;
+import com.jrobertgardzinski.offboarding.domain.SagaStore;
 
 import javax.sql.DataSource;
 import java.sql.Connection;

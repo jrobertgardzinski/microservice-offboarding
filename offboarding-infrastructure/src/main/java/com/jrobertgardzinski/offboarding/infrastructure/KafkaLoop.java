@@ -3,7 +3,7 @@ package com.jrobertgardzinski.offboarding.infrastructure;
 import com.jrobertgardzinski.offboarding.application.EventsRouter;
 import com.jrobertgardzinski.offboarding.domain.Observation;
 import com.jrobertgardzinski.observation.Observations;
-import com.jrobertgardzinski.offboarding.system.SagaStore;
+import com.jrobertgardzinski.offboarding.domain.SagaStore;
 import com.jrobertgardzinski.offboarding.application.Source;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;

@@ -7,9 +7,11 @@
     <!-- The saga's data, and nothing else: what a case is opened with, what a confirmation lands
          as, what the sweeper hands back, and the facts this service states about itself.
 
-         It has no dependencies at all, and that is the point rather than an accident — a type in
-         here cannot know about a broker, a database, a metric or a JSON library even by mistake.
-         The emptiest pom in the estate is the strongest guarantee in it. -->
+         At compile scope it has no dependencies at all, and that is the point rather than an
+         accident — a type in here cannot know about a broker, a database, a metric or a JSON
+         library even by mistake. The two test-scoped lines below are the saga's own vocabulary and
+         nothing more: SagaStore's fake, which lives beside the port, is opened with a
+         ClosureInitiator. -->
     <parent>
         <groupId>com.jrobertgardzinski</groupId>
         <artifactId>microservice-offboarding</artifactId>
@@ -20,4 +22,31 @@
     <properties>
         <offboarding.repo.root>${project.parent.basedir}</offboarding.repo.root>
     </properties>
+
+    <dependencies>
+        <dependency>
+            <!-- FakeSagaStore opens a case with the initiator the orchestrator was told about -->
+            <groupId>com.jrobertgardzinski</groupId>
+            <artifactId>account-closure</artifactId>
+            <version>1.0.0-SNAPSHOT</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <!-- SagaStore's fake and its contract travel to whoever implements or drives it -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

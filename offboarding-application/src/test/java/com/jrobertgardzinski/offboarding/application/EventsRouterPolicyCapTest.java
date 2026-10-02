@@ -4,7 +4,7 @@ import com.jrobertgardzinski.offboarding.application.Source;
 import com.jrobertgardzinski.offboarding.domain.SweepResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.jrobertgardzinski.offboarding.system.SagaStore;
+import com.jrobertgardzinski.offboarding.domain.SagaStore;
 import io.qameta.allure.Epic;
 import io.qameta.allure.Feature;
 import org.junit.jupiter.api.Test;

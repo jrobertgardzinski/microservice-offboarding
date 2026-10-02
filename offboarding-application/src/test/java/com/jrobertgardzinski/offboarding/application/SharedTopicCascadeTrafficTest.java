@@ -1,6 +1,6 @@
 package com.jrobertgardzinski.offboarding.application;
 
-import com.jrobertgardzinski.offboarding.system.FakeSagaStore;
+import com.jrobertgardzinski.offboarding.domain.FakeSagaStore;
 import com.jrobertgardzinski.offboarding.application.Source;
 import io.qameta.allure.Epic;
 import io.qameta.allure.Feature;

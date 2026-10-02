@@ -10,7 +10,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jrobertgardzinski.offboarding.system.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.system.RecordConfirmation;
-import com.jrobertgardzinski.offboarding.system.SagaStore;
+import com.jrobertgardzinski.offboarding.domain.SagaStore;
 import com.jrobertgardzinski.offboarding.system.SweepOverdue;
 import io.qameta.allure.Epic;
 import io.qameta.allure.Feature;

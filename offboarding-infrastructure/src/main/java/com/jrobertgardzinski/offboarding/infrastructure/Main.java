@@ -6,7 +6,7 @@ import com.jrobertgardzinski.observation.Observations;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jrobertgardzinski.offboarding.system.BeginOffboarding;
 import com.jrobertgardzinski.offboarding.system.RecordConfirmation;
-import com.jrobertgardzinski.offboarding.system.SagaStore;
+import com.jrobertgardzinski.offboarding.domain.SagaStore;
 import com.jrobertgardzinski.offboarding.system.SweepOverdue;
 import io.helidon.webserver.WebServer;
 import org.slf4j.Logger;
