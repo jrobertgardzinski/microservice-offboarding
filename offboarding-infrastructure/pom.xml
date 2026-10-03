@@ -65,6 +65,75 @@
             <artifactId>observation</artifactId>
             <version>1.0.0-SNAPSHOT</version>
         </dependency>
+        <!-- EVERYTHING WITH THE OUTSIDE IN IT, and this is the only module that may declare
+             it: /health and /metrics over HTTP, Kafka for everything the saga says or hears,
+             JDBC + Flyway for the saga's progress. Until 2026-10-03 the repository pom handed
+             these to all four modules; they live here now because this is where they are used. -->
+        <dependency>
+            <groupId>io.helidon.webserver</groupId>
+            <artifactId>helidon-webserver</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+        <!-- runtime only: nothing names these in code. Logging routes Helidon's own lines through
+             SLF4J/Logback so the correlation id rides every line via MDC (%X{cid}); the drivers
+             are picked by the JDBC url - Postgres in prod, H2 in PG mode for dev and the tests. -->
+        <dependency>
+            <groupId>io.helidon.logging</groupId>
+            <artifactId>helidon-logging-slf4j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- a real broker for the KafkaLoop integration test: the transport guarantees (offsets
+             past poison pills, flush-before-commit, rewind-and-retry) only exist against actual
+             Kafka; skipped where docker is absent, like memes' MinIO test -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
