@@ -45,9 +45,10 @@ could not be read without reading Kafka. A package cannot prevent that; a missin
 
 - **offboarding-domain** — the saga's data (`Opening`, `Recorded`, `Retry`, `Compensated`,
   `SweepResult`, `PendingOutcome`), the facts this service states about itself (`Observation`) and
-  the basis a closure is carried out under (`RequestedBy`). No transport, no framework.
+  the `SagaStore` port the saga is persisted through, with its fake and its contract test beside
+  it. No transport, no framework.
 - **offboarding-system** — the use cases, one per door into the process manager:
-  `BeginOffboarding`, `RecordConfirmation`, `SweepOverdue`, over the `SagaStore` port.
+  `BeginOffboarding`, `RecordConfirmation`, `SweepOverdue`, working over that port.
 - **offboarding-application** — the orchestrator: `EventsRouter`, the switchboard between those
   use cases, talking in `Source` and `Destination` and knowing no transport at all. The scenarios
   and every contract with a neighbour live here, because this is the layer that owns the
@@ -99,10 +100,12 @@ mvn test                 # the specs/ scenarios (begin, record, sweep), the law,
 mvn package && java -jar target/microservice-offboarding.jar
 ```
 
-Env: `OFFBOARDING_PORT` (8094), `OFFBOARDING_FACTS_TOPIC` (security-events),
-`OFFBOARDING_PARTICIPANTS` (see above), `OFFBOARDING_ALIVE_STALL_SEC` (240, pinned beside the
-liveness thresholds it is derived from), `KAFKA_BOOTSTRAP_SERVERS` (absent = the loop never runs),
-`DB_URL`/`DB_USER`/`DB_PASSWORD` (absent = in-memory H2).
+Env: `OFFBOARDING_PROFILE` (`dev`|`test`|`prod`, **required** — a start that names no profile
+is refused by name, see `ProfileGuard`), `OFFBOARDING_PORT` (8094),
+`OFFBOARDING_FACTS_TOPIC` (security-events), `OFFBOARDING_PARTICIPANTS` (see above),
+`OFFBOARDING_ALIVE_STALL_SEC` (240, pinned beside the liveness thresholds it is derived from),
+`KAFKA_BOOTSTRAP_SERVERS` (absent = the loop never runs), `DB_URL`/`DB_USER`/`DB_PASSWORD`
+(absent = in-memory H2).
 
 **The saga's clocks are not among them, deliberately.** The purge timeout, the retry count, the
 outcome-republish window, the retention and the two stall tolerances used to be environment

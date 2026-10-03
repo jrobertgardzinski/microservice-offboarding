@@ -53,16 +53,13 @@ public interface SagaStore {
 
     /**
      * Record one participant's confirmation. Fresh confirmations echo the saga id the command
-     * carried — that is the precise address; without one (old producers) the running saga for the
-     * email is the fallback. A confirmation with no saga to land on is a stray: it records nothing
-     * and returns {@link Optional#empty()}. {@code required} is the caller's CONFIGURATION, used
-     * only for sagas that recorded no participant set of their own ({@link Opening#participants});
-     * a saga that recorded one is judged against THAT set, so re-configuring the participants can
-     * never change the completeness criterion of a case already under way.
-     */
-    /**
-     * Records one participant's confirmation. {@code sagaId} is the precise address; a confirmation
-     * without one lands on the running saga of {@code userId}.
+     * carried — that is the precise address; without one (old producers) the running saga of
+     * {@code userId} is the fallback. A confirmation with no saga to land on is a stray: it
+     * records nothing and returns {@link Optional#empty()}. {@code required} is the caller's
+     * CONFIGURATION, used only for sagas that recorded no participant set of their own
+     * ({@link Opening#participants}); a saga that recorded one is judged against THAT set, so
+     * re-configuring the participants can never change the completeness criterion of a case
+     * already under way.
      */
     Optional<Recorded> confirm(UUID userId, UUID sagaId, String participant, Set<String> required,
                                Instant at);

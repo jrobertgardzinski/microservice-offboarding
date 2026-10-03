@@ -4,8 +4,9 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <!-- The saga's data, and nothing else: what a case is opened with, what a confirmation lands
-         as, what the sweeper hands back, and the facts this service states about itself.
+    <!-- The saga's data and the port it is persisted through: what a case is opened with, what a
+         confirmation lands as, what the sweeper hands back, the facts this service states about
+         itself, and SagaStore.
 
          At compile scope it has no dependencies at all, and that is the point rather than an
          accident — a type in here cannot know about a broker, a database, a metric or a JSON

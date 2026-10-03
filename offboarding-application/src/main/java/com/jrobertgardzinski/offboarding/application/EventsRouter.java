@@ -196,6 +196,18 @@ public class EventsRouter {
     }
 
     /**
+     * This router's instant, and the one reading of "now" the saga has. The sweep derives its
+     * overdue cutoff from this clock, and {@link SagaStore#retryDelivered} requires the stamp of a
+     * delivered re-command to come from the SAME clock as that cutoff — a second clock would put
+     * its skew straight into the participant's budget. So the adapter that does the delivering
+     * asks here instead of reading a system clock of its own: the invariant is wired, not
+     * remembered.
+     */
+    public Instant now() {
+        return Instant.now(clock);
+    }
+
+    /**
      * The timeout sweep — and the outbox's broom. Overdue sagas get their purge command resent
      * while retries remain; the exhausted ones compensate and announce the failure (naming the
      * participants that DID purge — a partial purge is worth knowing about); finished sagas whose

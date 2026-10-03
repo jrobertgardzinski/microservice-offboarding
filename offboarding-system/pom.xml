@@ -5,7 +5,8 @@
     <modelVersion>4.0.0</modelVersion>
 
     <!-- The use cases, one per door into the process manager: open a case, record a confirmation,
-         sweep the overdue ones. Plus the SagaStore port they work over.
+         sweep the overdue ones. The SagaStore port they work over lives in offboarding-domain,
+         beside the saga's data.
 
          Framework-free and transport-free, exactly like the identity service's security-system.
          A monolith takes this module as it is. -->
@@ -26,18 +27,14 @@
             <artifactId>offboarding-domain</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <dependency>
-            <groupId>com.jrobertgardzinski</groupId>
-            <artifactId>observation</artifactId>
-            <version>1.0.0-SNAPSHOT</version>
-        </dependency>
-        <!-- the words this saga shares with identity and with every participant: the message names
-             and who asked for the closure. They were a final class of constants here, an enum in
-             identity and a private String in each content service. -->
+        <!-- test scope only, and only because of the fake: FakeSagaStore (from the domain's
+             test-jar) opens a case with a ClosureInitiator, and a test-scoped dependency of the
+             domain does not travel with its test-jar. No use case here says a closure word. -->
         <dependency>
             <groupId>com.jrobertgardzinski</groupId>
             <artifactId>account-closure</artifactId>
             <version>1.0.0-SNAPSHOT</version>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <!-- SagaStore's fake and contract, now beside the port -->

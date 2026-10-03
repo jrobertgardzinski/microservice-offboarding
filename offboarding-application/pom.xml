@@ -50,6 +50,20 @@
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <!-- the words this saga shares with identity and with every participant: the message
+                 names the router routes on, and who asked for the closure (ClosureInitiator,
+                 which normalises the basis before it reaches a use case) -->
+            <groupId>com.jrobertgardzinski</groupId>
+            <artifactId>account-closure</artifactId>
+            <version>1.0.0-SNAPSHOT</version>
+        </dependency>
+        <dependency>
+            <!-- where the router STATES what it noticed; the adapter decides these are counters -->
+            <groupId>com.jrobertgardzinski</groupId>
+            <artifactId>observation</artifactId>
+            <version>1.0.0-SNAPSHOT</version>
+        </dependency>
     </dependencies>
 
     <build>

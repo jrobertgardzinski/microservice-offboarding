@@ -27,7 +27,9 @@ import java.util.List;
  */
 public class SweepOverdue {
 
-    /** The house defaults; production overrides ride the environment (see Main). */
+    // The house numbers. Not defaults in the configurable sense: nothing in the estate overrides
+    // any of them from the environment any more, and the comment in Main says why.
+
     /**
      * How long a participant may stay silent after it was ASKED — measured from the last command
      * it actually received, never from the saga's birth.

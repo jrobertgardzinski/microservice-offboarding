@@ -22,7 +22,6 @@ import org.slf4j.MDC;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -425,10 +424,12 @@ public class KafkaLoop {
             if (each.outgoing().countsRetryFor() != null
                     // the delivery just happened, so now IS the stamp — and the stamp is the
                     // participant's budget for this re-command: the sweep's overdue clock runs
-                    // from it (SagaStore#retryDelivered). The charge names the round the sweep
-                    // offered, so a second sweeper's report of the same round buys nothing
+                    // from it (SagaStore#retryDelivered). Read off the ROUTER's clock, the one the
+                    // cutoff is derived from, because the port asks for both to come from the same
+                    // one. The charge names the round the sweep offered, so a second sweeper's
+                    // report of the same round buys nothing
                     && store.retryDelivered(each.outgoing().countsRetryFor().sagaId(),
-                    each.outgoing().countsRetryFor().retriesSoFar(), Instant.now())) {
+                    each.outgoing().countsRetryFor().retriesSoFar(), router.now())) {
                 // metered only when the store actually charged the counter: a delivery landing
                 // on a saga that meanwhile finished is a no-op there and must be one here too,
                 // or the metric would drift ahead of the sum of retries in the store
