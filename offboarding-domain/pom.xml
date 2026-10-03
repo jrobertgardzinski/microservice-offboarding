@@ -8,11 +8,21 @@
          confirmation lands as, what the sweeper hands back, the facts this service states about
          itself, and SagaStore.
 
-         At compile scope it has no dependencies at all, and that is the point rather than an
-         accident — a type in here cannot know about a broker, a database, a metric or a JSON
-         library even by mistake. The two test-scoped lines below are the saga's own vocabulary and
-         nothing more: SagaStore's fake, which lives beside the port, is opened with a
-         ClosureInitiator. -->
+         It DECLARES no compile-scope dependency, and the source honours that: every import under
+         src/main is java.time or java.util, nothing else. But this is kept by hand, not by the
+         build. The repository pom puts helidon-webserver, jackson-databind, kafka-clients,
+         HikariCP, flyway, postgresql and logback-classic in a top-level <dependencies>, so every
+         module inherits them — including this one. A type in here CAN import a broker, a database
+         or a JSON library by mistake and still compile; it just has not. Said plainly because the
+         comment that stood here until 2026-10-03 claimed the opposite guarantee and named those
+         exact four things as impossible.
+
+         Moving the repository's blanket dependencies into <dependencyManagement>, with each module
+         declaring what it uses, is what would make the guarantee real — four modules' worth of
+         declarations, and the owner's call, not a passing edit.
+
+         The test-scoped line below is the saga's own vocabulary and nothing more: SagaStore's fake,
+         which lives beside the port, is opened with a ClosureInitiator. -->
     <parent>
         <groupId>com.jrobertgardzinski</groupId>
         <artifactId>microservice-offboarding</artifactId>
